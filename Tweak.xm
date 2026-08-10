@@ -1,135 +1,155 @@
 // =============================================================
-//  PiPiNoTabs — 隐藏皮皮虾底部 TabBar，双击手势开关
-//  隐藏整个 TTTabbar，调整内容视图全屏，双指双击弹出设置
+//  PiPiNoTabs — 即时隐藏 + 双指双击菜单
+//  隐藏「发现」「加号」「消息」，保留「首页」「我的」均匀分布
+//  双指双击弹出菜单，可开启/关闭隐藏功能
 // =============================================================
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
+
+static NSString * const kPPEnabledKey = @"PiPiNoTabs_Enabled";
 
 static BOOL PPShouldApply() {
     NSString *bundleID = [[NSBundle mainBundle] bundleIdentifier];
     return [bundleID isEqualToString:@"com.bd.iphone.superPropipi"];
 }
 
-static BOOL PPIsEnabled = YES; // 默认开启隐藏
+static BOOL PPIsEnabled() {
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    if ([defaults objectForKey:kPPEnabledKey] == nil) {
+        return YES; // 默认启用
+    }
+    return [defaults boolForKey:kPPEnabledKey];
+}
 
-// 保存原始 tabBar frame 以便恢复
-static CGRect PPOriginalTabBarFrame;
+static void PPSetEnabled(BOOL enabled) {
+    [[NSUserDefaults standardUserDefaults] setBool:enabled forKey:kPPEnabledKey];
+    [[NSUserDefaults standardUserDefaults] synchronize];
+}
 
-// ---------- 隐藏/恢复 TabBar ----------
-static void PPHideTabBar(UIView *tabBar, BOOL hide) {
+// 保存原始布局
+static NSMutableDictionary *PPOriginalFrames = nil;
+static NSMutableDictionary *PPOriginalHidden = nil;
+
+static void PPSaveOriginalState(UIView *tabBar) {
     if (!tabBar) return;
-    if (hide) {
-        // 隐藏并移出屏幕
-        tabBar.hidden = YES;
-        tabBar.alpha = 0.0;
-        // 保存原始 frame
-        PPOriginalTabBarFrame = tabBar.frame;
-        // 移出屏幕
-        CGRect newFrame = tabBar.frame;
-        newFrame.origin.y = [UIScreen mainScreen].bounds.size.height;
-        tabBar.frame = newFrame;
-        // 调整父视图的内容视图（通常是 UIViewController 的 view）铺满全屏
-        UIView *parent = tabBar.superview;
-        if (parent) {
-            for (UIView *sub in parent.subviews) {
-                if (sub != tabBar) {
-                    sub.frame = parent.bounds;
-                    sub.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    if (!PPOriginalFrames) {
+        PPOriginalFrames = [NSMutableDictionary dictionary];
+        PPOriginalHidden = [NSMutableDictionary dictionary];
+    }
+    NSArray *subviews = tabBar.subviews;
+    for (NSInteger i = 0; i < subviews.count; i++) {
+        UIView *btn = subviews[i];
+        NSString *key = [NSString stringWithFormat:@"%ld", (long)i];
+        PPOriginalFrames[key] = [NSValue valueWithCGRect:btn.frame];
+        PPOriginalHidden[key] = @(btn.hidden);
+    }
+}
+
+static void PPRestoreOriginalState(UIView *tabBar) {
+    if (!tabBar || !PPOriginalFrames) return;
+    NSArray *subviews = tabBar.subviews;
+    for (NSInteger i = 0; i < subviews.count && i < subviews.count; i++) {
+        NSString *key = [NSString stringWithFormat:@"%ld", (long)i];
+        NSValue *frameVal = PPOriginalFrames[key];
+        NSNumber *hiddenVal = PPOriginalHidden[key];
+        if (frameVal && hiddenVal) {
+            UIView *btn = subviews[i];
+            btn.frame = [frameVal CGRectValue];
+            btn.hidden = [hiddenVal boolValue];
+            btn.alpha = 1.0;
+            btn.userInteractionEnabled = YES;
+        }
+    }
+    [tabBar setNeedsLayout];
+    [tabBar layoutIfNeeded];
+}
+
+// 重新布局函数
+static void PPHideAndRearrange(UIView *tabBar) {
+    if (!tabBar) return;
+    if (![NSStringFromClass([tabBar class]) isEqualToString:@"TTTabbar"]) return;
+    
+    // 如果未启用，恢复原始状态
+    if (!PPIsEnabled()) {
+        PPRestoreOriginalState(tabBar);
+        return;
+    }
+    
+    // 首次处理时保存原始状态
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        PPSaveOriginalState(tabBar);
+    });
+    
+    NSMutableArray *buttons = [NSMutableArray array];
+    for (UIView *sub in tabBar.subviews) {
+        [buttons addObject:sub];
+    }
+    if (buttons.count == 0) return;
+    
+    NSMutableArray *keepButtons = [NSMutableArray array];
+    for (UIView *btn in buttons) {
+        NSString *title = nil;
+        for (UIView *inner in btn.subviews) {
+            if ([inner isKindOfClass:[UILabel class]]) {
+                title = ((UILabel *)inner).text;
+                break;
+            }
+        }
+        if (!title) {
+            @try { title = [btn valueForKey:@"title"]; } @catch (NSException *e) {}
+        }
+        if (title && ([title isEqualToString:@"首页"] || [title isEqualToString:@"我的"])) {
+            [keepButtons addObject:btn];
+        } else {
+            btn.hidden = YES;
+            btn.alpha = 0.0;
+            btn.userInteractionEnabled = NO;
+        }
+    }
+    
+    if (keepButtons.count == 2) {
+        CGFloat width = tabBar.frame.size.width / keepButtons.count;
+        CGFloat height = tabBar.frame.size.height;
+        for (NSInteger i = 0; i < keepButtons.count; i++) {
+            UIView *btn = keepButtons[i];
+            [UIView performWithoutAnimation:^{
+                btn.frame = CGRectMake(i * width, 0, width, height);
+                btn.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+                for (UIView *sub in btn.subviews) {
+                    sub.frame = btn.bounds;
+                    if ([sub isKindOfClass:[UILabel class]]) {
+                        ((UILabel *)sub).textAlignment = NSTextAlignmentCenter;
+                    }
                 }
-            }
+            }];
         }
-    } else {
-        // 恢复
-        tabBar.hidden = NO;
-        tabBar.alpha = 1.0;
-        tabBar.frame = PPOriginalTabBarFrame;
-        // 恢复子视图 frame（可能需要重新布局）
-        [tabBar.superview setNeedsLayout];
-        [tabBar.superview layoutIfNeeded];
+        [tabBar setNeedsLayout];
+        [tabBar layoutIfNeeded];
     }
 }
 
-// 查找 TTTabbar
-static UIView* PPFindTabBar(UIView *root) {
-    if (!root) return nil;
-    if ([NSStringFromClass([root class]) isEqualToString:@"TTTabbar"]) {
-        return root;
-    }
-    for (UIView *sub in root.subviews) {
-        UIView *found = PPFindTabBar(sub);
-        if (found) return found;
-    }
-    return nil;
-}
-
-// ---------- 手势控制 ----------
-static void PPShowMenu(UIViewController *vc) {
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"PiPiNoTabs"
-                                                                   message:[NSString stringWithFormat:@"当前状态: %@", PPIsEnabled ? @"隐藏" : @"显示"]
-                                                            preferredStyle:UIAlertControllerStyleAlert];
-    UIAlertAction *toggleAction = [UIAlertAction actionWithTitle:PPIsEnabled ? @"显示 TabBar" : @"隐藏 TabBar"
-                                                           style:UIAlertActionStyleDefault
-                                                         handler:^(UIAlertAction * _Nonnull action) {
-                                                             PPIsEnabled = !PPIsEnabled;
-                                                             UIView *tabBar = PPFindTabBar(vc.view);
-                                                             if (tabBar) {
-                                                                 PPHideTabBar(tabBar, PPIsEnabled);
-                                                             }
-                                                             // 保存状态
-                                                             [[NSUserDefaults standardUserDefaults] setBool:PPIsEnabled forKey:@"PiPiNoTabs_Enabled"];
-                                                             [[NSUserDefaults standardUserDefaults] synchronize];
-                                                         }];
-    UIAlertAction *cancelAction = [UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil];
-    [alert addAction:toggleAction];
-    [alert addAction:cancelAction];
-    [vc presentViewController:alert animated:YES completion:nil];
-}
-
-// 手势回调
-static void PPHandleDoubleTap(UITapGestureRecognizer *gesture) {
-    UIViewController *vc = nil;
-    UIResponder *responder = gesture.view;
-    while (responder) {
-        if ([responder isKindOfClass:[UIViewController class]]) {
-            vc = (UIViewController *)responder;
-            break;
-        }
-        responder = [responder nextResponder];
-    }
-    if (vc) {
-        PPShowMenu(vc);
-    }
-}
-
-// 添加手势到主视图
-static void PPAddGesture(UIView *view) {
+// 递归查找 TTTabbar
+static void PPFindAndProcessTabBar(UIView *view) {
     if (!view) return;
-    // 检查是否已有手势
-    for (UIGestureRecognizer *g in view.gestureRecognizers) {
-        if ([g isKindOfClass:[UITapGestureRecognizer class]]) {
-            UITapGestureRecognizer *tap = (UITapGestureRecognizer *)g;
-            if (tap.numberOfTapsRequired == 2 && tap.numberOfTouchesRequired == 2) {
-                return;
-            }
-        }
+    if ([NSStringFromClass([view class]) isEqualToString:@"TTTabbar"]) {
+        PPHideAndRearrange(view);
+        return;
     }
-    UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc] initWithTarget:nil action:@selector(pp_handleDoubleTap:)];
-    tap.numberOfTapsRequired = 2;
-    tap.numberOfTouchesRequired = 2;
-    [view addGestureRecognizer:tap];
-    // 由于 target 为 nil，使用分类方法实现
-    // 下面通过添加分类实现
+    for (UIView *sub in view.subviews) {
+        PPFindAndProcessTabBar(sub);
+    }
 }
 
-// 分类实现手势
-@interface UIView (PiPiNoTabs)
-- (void)pp_handleDoubleTap:(UITapGestureRecognizer *)gesture;
-@end
-@implementation UIView (PiPiNoTabs)
-- (void)pp_handleDoubleTap:(UITapGestureRecognizer *)gesture {
-    PPHandleDoubleTap(gesture);
+// ---------- Hook TTTabbar 的 layoutSubviews ----------
+%hook TTTabbar
+- (void)layoutSubviews {
+    %orig;
+    if (PPShouldApply()) {
+        PPHideAndRearrange(self);
+    }
 }
-@end
+%end
 
 // ---------- 屏蔽儿童模式弹窗 ----------
 static BOOL PPShouldBlockAlert(UIViewController *vc) {
@@ -154,39 +174,79 @@ static BOOL PPShouldBlockAlert(UIViewController *vc) {
 }
 %end
 
-// ---------- 主逻辑 ----------
-%hook UIViewController
-- (void)viewDidAppear:(BOOL)animated {
-    %orig;
-    if (!PPShouldApply()) return;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        // 读取保存的状态
-        NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
-        if ([defaults objectForKey:@"PiPiNoTabs_Enabled"] != nil) {
-            PPIsEnabled = [defaults boolForKey:@"PiPiNoTabs_Enabled"];
-        }
-        // 延迟执行确保视图加载
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            UIView *tabBar = PPFindTabBar(self.view);
-            if (tabBar) {
-                PPHideTabBar(tabBar, PPIsEnabled);
-            }
-            // 添加手势
-            PPAddGesture(self.view);
-            // 弹窗提示
-            UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"PiPiNoTabs"
-                                                                           message:[NSString stringWithFormat:@"插件已加载，当前: %@\n双指双击可切换", PPIsEnabled ? @"隐藏" : @"显示"]
-                                                                    preferredStyle:UIAlertControllerStyleAlert];
-            [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
-            [self presentViewController:alert animated:YES completion:nil];
-        });
+// ---------- 双指双击菜单 ----------
+static void PPShowMenu(UIView *view) {
+    UIViewController *root = [UIApplication sharedApplication].keyWindow.rootViewController;
+    if (!root) return;
+    BOOL enabled = PPIsEnabled();
+    NSString *title = enabled ? @"当前：已隐藏" : @"当前：显示";
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"PiPiNoTabs"
+                                                                   message:title
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    UIAlertAction *toggleAction = [UIAlertAction actionWithTitle:enabled ? @"关闭隐藏" : @"开启隐藏"
+                                                           style:UIAlertActionStyleDefault
+                                                         handler:^(UIAlertAction * _Nonnull action) {
+                                                             PPSetEnabled(!enabled);
+                                                             // 强制刷新布局
+                                                             UIWindow *window = [UIApplication sharedApplication].keyWindow;
+                                                             if (window) {
+                                                                 PPFindAndProcessTabBar(window);
+                                                                 [window setNeedsLayout];
+                                                                 [window layoutIfNeeded];
+                                                             }
+                                                         }];
+    UIAlertAction *cancel = [UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil];
+    [alert addAction:toggleAction];
+    [alert addAction:cancel];
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [root presentViewController:alert animated:YES completion:nil];
     });
 }
-%end
 
+static void PPAddGesture() {
+    UIWindow *window = [UIApplication sharedApplication].keyWindow;
+    if (!window) return;
+    // 检查是否已添加手势
+    for (UIGestureRecognizer *gesture in window.gestureRecognizers) {
+        if ([gesture isKindOfClass:[UITapGestureRecognizer class]]) {
+            UITapGestureRecognizer *tap = (UITapGestureRecognizer *)gesture;
+            if (tap.numberOfTapsRequired == 2 && tap.numberOfTouchesRequired == 2) {
+                return;
+            }
+        }
+    }
+    UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc] initWithTarget:nil action:@selector(pp_handleDoubleDoubleTap:)];
+    tap.numberOfTapsRequired = 2;
+    tap.numberOfTouchesRequired = 2;
+    [window addGestureRecognizer:tap];
+    // 由于 target 为 nil，使用分类方法
+    [window pp_addGestureHandler];
+}
+
+@interface UIWindow (PiPiNoTabs)
+- (void)pp_handleDoubleDoubleTap:(UITapGestureRecognizer *)gesture;
+- (void)pp_addGestureHandler;
+@end
+
+@implementation UIWindow (PiPiNoTabs)
+- (void)pp_handleDoubleDoubleTap:(UITapGestureRecognizer *)gesture {
+    PPShowMenu(self);
+}
+- (void)pp_addGestureHandler {
+    // 空实现，仅用于确保方法存在
+}
+@end
+
+// ---------- 加载入口 ----------
 %ctor {
     if (PPShouldApply()) {
-        NSLog(@"[PiPiNoTabs] 插件加载成功");
+        // 立即执行隐藏（无延迟）
+        dispatch_async(dispatch_get_main_queue(), ^{
+            UIWindow *window = [UIApplication sharedApplication].keyWindow;
+            if (window) {
+                PPFindAndProcessTabBar(window);
+                PPAddGesture();
+            }
+        });
     }
 }
