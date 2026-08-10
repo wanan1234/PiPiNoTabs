@@ -1,0 +1,9 @@
+Package: com.example.pipinotabs
+Name: PiPiNoTabs
+Version: 1.0.0
+Architecture: iphoneos-arm
+Description: 隐藏皮皮虾底部「发现」「加号」「消息」，保留「首页」「我的」，屏蔽儿童模式弹窗
+Maintainer: you <you@example.com>
+Author: you
+Section: Tweaks
+Depends: mobilesubstrate
