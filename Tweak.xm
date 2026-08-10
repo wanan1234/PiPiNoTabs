@@ -1,6 +1,5 @@
 // =============================================================
-//  PiPiNoTabs — 隐藏皮皮虾底部「发现」「加号」「消息」
-//  保留「首页」「我的」，均匀布局，屏蔽儿童模式弹窗
+//  PiPiNoTabs — 增强版（拦截 addSubview 屏蔽弹窗，通用 TabBar 处理）
 //  Bundle ID: com.bd.iphone.superPropipi
 // =============================================================
 #import <UIKit/UIKit.h>
@@ -11,13 +10,13 @@ static BOOL PPShouldApply() {
     return [bundleID isEqualToString:@"com.bd.iphone.superPropipi"];
 }
 
-// ---------- TabBar 隐藏与重新布局 ----------
+// ---------- TabBar 处理 ----------
 static void PPHideAndRearrange(UIView *tabBar) {
     if (!tabBar) return;
-    // 检查是否是 TTTabbar 或其子类
-    if (![NSStringFromClass([tabBar class]) containsString:@"TTTabbar"]) return;
+    // 只要类名包含 Tabbar 或 TabBar 就处理
+    if (![NSStringFromClass([tabBar class]) containsString:@"Tabbar"] &&
+        ![NSStringFromClass([tabBar class]) containsString:@"TabBar"]) return;
     
-    // 收集所有按钮视图
     NSMutableArray *buttons = [NSMutableArray array];
     for (UIView *sub in tabBar.subviews) {
         NSString *className = NSStringFromClass([sub class]);
@@ -27,10 +26,8 @@ static void PPHideAndRearrange(UIView *tabBar) {
     }
     if (buttons.count == 0) return;
     
-    // 分离要保留的按钮
     NSMutableArray *keepButtons = [NSMutableArray array];
     for (UIView *btn in buttons) {
-        // 获取标题
         NSString *title = nil;
         for (UIView *inner in btn.subviews) {
             if ([inner isKindOfClass:[UILabel class]]) {
@@ -44,14 +41,12 @@ static void PPHideAndRearrange(UIView *tabBar) {
         if (title && ([title isEqualToString:@"首页"] || [title isEqualToString:@"我的"])) {
             [keepButtons addObject:btn];
         } else {
-            // 隐藏其他按钮（发现、加号、消息）
             btn.hidden = YES;
             btn.alpha = 0.0;
             btn.userInteractionEnabled = NO;
         }
     }
     
-    // 重新布局保留的按钮（均匀分布）
     if (keepButtons.count == 2) {
         CGFloat width = tabBar.frame.size.width / keepButtons.count;
         CGFloat height = tabBar.frame.size.height;
@@ -60,7 +55,6 @@ static void PPHideAndRearrange(UIView *tabBar) {
             [UIView performWithoutAnimation:^{
                 btn.frame = CGRectMake(i * width, 0, width, height);
                 btn.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-                // 确保内部子视图居中
                 for (UIView *sub in btn.subviews) {
                     sub.frame = btn.bounds;
                     if ([sub isKindOfClass:[UILabel class]]) {
@@ -71,43 +65,37 @@ static void PPHideAndRearrange(UIView *tabBar) {
         }
         [tabBar setNeedsLayout];
         [tabBar layoutIfNeeded];
-        NSLog(@"[PiPiNoTabs] TabBar 已重新布局，保留 %lu 个按钮", (unsigned long)keepButtons.count);
-    } else {
-        NSLog(@"[PiPiNoTabs] 保留按钮数量异常: %lu", (unsigned long)keepButtons.count);
     }
 }
 
-static void PPProcessTabBar() {
-    UIWindow *window = [UIApplication sharedApplication].windows.firstObject;
-    if (!window) return;
-    // 遍历所有子视图查找 TTTabbar
-    for (UIView *sub in window.subviews) {
-        if ([NSStringFromClass([sub class]) containsString:@"TTTabbar"]) {
-            PPHideAndRearrange(sub);
-            return;
+// ---------- 弹窗屏蔽：拦截 UIWindow 的 addSubview ----------
+%hook UIWindow
+- (void)addSubview:(UIView *)view {
+    if (PPShouldApply()) {
+        // 检测是否是弹窗视图（类名包含 BDSStyledAlertController 或类似）
+        NSString *className = NSStringFromClass([view class]);
+        if ([className containsString:@"BDSStyledAlertController"] ||
+            [className containsString:@"Alert"]) {
+            // 进一步检查标题
+            @try {
+                UIViewController *vc = nil;
+                // 尝试获取控制器
+                if ([view isKindOfClass:[UIView class]]) {
+                    // 如果视图是控制器视图，通过 nextResponder 获取
+                    id responder = [view nextResponder];
+                    if ([responder isKindOfClass:[UIViewController class]]) {
+                        vc = (UIViewController *)responder;
+                    }
+                }
+                if (vc) {
+                    NSString *title = [vc valueForKey:@"title"];
+                    if (title && [title containsString:@"儿童/青少年模式"]) {
+                        // 屏蔽此弹窗
+                        return;
+                    }
+                }
+            } @catch (NSException *e) {}
         }
-    }
-}
-
-// ---------- 屏蔽儿童/青少年模式弹窗 ----------
-static BOOL PPShouldBlockAlert(UIViewController *vc) {
-    NSString *className = NSStringFromClass([vc class]);
-    if ([className containsString:@"BDSStyledAlertController"]) {
-        // 检查标题是否包含“儿童/青少年模式”
-        @try {
-            NSString *title = [vc valueForKey:@"title"];
-            if (title && [title containsString:@"儿童/青少年模式"]) {
-                return YES;
-            }
-        } @catch (NSException *e) {}
-    }
-    return NO;
-}
-
-%hook UIViewController
-- (void)presentViewController:(UIViewController *)viewControllerToPresent animated:(BOOL)flag completion:(void (^)(void))completion {
-    if (PPShouldApply() && PPShouldBlockAlert(viewControllerToPresent)) {
-        return; // 拦截弹窗
     }
     %orig;
 }
@@ -116,8 +104,17 @@ static BOOL PPShouldBlockAlert(UIViewController *vc) {
 %ctor {
     if (PPShouldApply()) {
         NSLog(@"[PiPiNoTabs] 插件加载成功");
+        // 延迟执行 TabBar 处理
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            PPProcessTabBar();
+            UIWindow *window = [UIApplication sharedApplication].windows.firstObject;
+            if (!window) return;
+            for (UIView *sub in window.subviews) {
+                if ([NSStringFromClass([sub class]) containsString:@"Tabbar"] ||
+                    [NSStringFromClass([sub class]) containsString:@"TabBar"]) {
+                    PPHideAndRearrange(sub);
+                    break;
+                }
+            }
         });
     }
 }
