@@ -1,7 +1,8 @@
 // =============================================================
-//  PiPiNoTabs — 终极稳定版（Hook setText 实时透明化）
-//  顶部标签文字透明，底部 TabBar 透明
-//  不处理搜索图标，不处理弹窗拦截
+//  PiPiNoTabs — 健壮高速版（无闪烁，每次成功）
+//  功能：透明化底部 TabBar 和顶部「关注、推荐、视频、图片、虾聊、文字」
+//  执行策略：%ctor 异步 + viewWillAppear 异步 + viewDidAppear 异步
+//  每次执行间隔极短（0.01秒），确保覆盖所有加载时机
 // =============================================================
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
@@ -11,79 +12,86 @@ static BOOL PPShouldApply() {
     return [bundleID isEqualToString:@"com.bd.iphone.superPropipi"];
 }
 
-// 目标文字列表
-static NSArray *PPTargetTitles(void) {
-    static NSArray *titles = nil;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        titles = @[@"关注", @"推荐", @"视频", @"图片", @"虾聊", @"文字"];
-    });
-    return titles;
-}
-
-// 透明化底部 TabBar
-static void PPProcessTabBar(UIView *view) {
-    if ([NSStringFromClass([view class]) isEqualToString:@"TTTabbar"]) {
-        [UIView performWithoutAnimation:^{
-            view.alpha = 0.0;
-            view.userInteractionEnabled = NO;
-            for (UIView *sub in view.subviews) {
-                sub.alpha = 0.0;
-                sub.userInteractionEnabled = NO;
-            }
-        }];
-    }
-}
-
-// 遍历一次视图树（初始处理）
-static void PPProcessAllWindows() {
+// ---------- 递归透明化 ----------
+static void PPTransparentizeViews(UIView *view) {
+    if (!view) return;
     @try {
-        for (UIWindow *window in [UIApplication sharedApplication].windows) {
-            // 处理 TabBar
-            PPProcessTabBar(window);
-            // 处理所有标签（但后续由 Hook 接管，这里只是初始清理）
-            // 但由于后续 Hook 会处理，这里可以不做标签处理，加快速度
+        // 1. 透明化底部 TabBar（TTTabbar）
+        if ([NSStringFromClass([view class]) isEqualToString:@"TTTabbar"]) {
+            [UIView performWithoutAnimation:^{
+                view.alpha = 0.0;
+                view.userInteractionEnabled = NO;
+                for (UIView *sub in view.subviews) {
+                    sub.alpha = 0.0;
+                    sub.userInteractionEnabled = NO;
+                }
+            }];
+            return;
+        }
+
+        // 2. 透明化顶部选项（通过文字匹配）
+        if ([view isKindOfClass:[UILabel class]]) {
+            UILabel *label = (UILabel *)view;
+            NSArray *targetTitles = @[@"关注", @"推荐", @"视频", @"图片", @"虾聊", @"文字"];
+            for (NSString *title in targetTitles) {
+                if ([label.text isEqualToString:title]) {
+                    [UIView performWithoutAnimation:^{
+                        label.alpha = 0.0;
+                    }];
+                    break;
+                }
+            }
+        }
+
+        // 递归子视图
+        for (UIView *sub in view.subviews) {
+            PPTransparentizeViews(sub);
         }
     } @catch (NSException *e) {
-        // 忽略
+        // 忽略异常
     }
 }
 
-// ---------- Hook UILabel 的 setText ----------
-%hook UILabel
-- (void)setText:(NSString *)text {
-    %orig(text);
-    if (PPShouldApply()) {
-        // 检查是否为目标文字
-        for (NSString *target in PPTargetTitles()) {
-            if ([text isEqualToString:target]) {
-                // 透明化
-                self.alpha = 0.0;
-                break;
-            }
-        }
+// ---------- 处理所有窗口 ----------
+static void PPProcessAllWindows() {
+    for (UIWindow *window in [UIApplication sharedApplication].windows) {
+        PPTransparentizeViews(window);
     }
 }
-%end
 
-// ---------- Hook TTTabbar 的 layoutSubviews（处理动态添加） ----------
-%hook TTTabbar
-- (void)layoutSubviews {
-    %orig;
-    if (PPShouldApply()) {
-        // 每次布局时重新透明化（防止被重置）
-        PPProcessTabBar(self);
-    }
+// ---------- 多次执行 ----------
+static void PPScheduleExecution() {
+    // 立即执行一次
+    PPProcessAllWindows();
+    // 延迟 0.01 秒执行一次
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.01 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        PPProcessAllWindows();
+    });
+    // 延迟 0.05 秒再执行一次，确保动态加载的视图也被覆盖
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        PPProcessAllWindows();
+    });
 }
-%end
 
+// ---------- Hook ----------
 %hook UIViewController
 - (void)viewWillAppear:(BOOL)animated {
     %orig;
     if (PPShouldApply()) {
         static dispatch_once_t onceToken;
         dispatch_once(&onceToken, ^{
-            // 初始处理（处理已存在的视图）
+            // 在视图即将显示时异步执行（极短延迟，用户无感知）
+            dispatch_async(dispatch_get_main_queue(), ^{
+                PPScheduleExecution();
+            });
+        });
+    }
+}
+- (void)viewDidAppear:(BOOL)animated {
+    %orig;
+    if (PPShouldApply()) {
+        // 再次执行，确保覆盖
+        dispatch_async(dispatch_get_main_queue(), ^{
             PPProcessAllWindows();
         });
     }
@@ -92,6 +100,7 @@ static void PPProcessAllWindows() {
 
 %ctor {
     if (PPShouldApply()) {
+        // 尽早执行一次，但视图可能未加载，没关系，后续会再次执行
         dispatch_async(dispatch_get_main_queue(), ^{
             PPProcessAllWindows();
         });
