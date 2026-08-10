@@ -1,5 +1,5 @@
 // =============================================================
-//  PiPiNoTabs — 全屏透明化终极版
+//  PiPiNoTabs — 全屏透明化终极版（修正编译错误）
 //  在 viewWillAppear 中立即执行，无延迟
 //  透明化 UINavigationBar 背景、搜索图标、顶部标签、底部 TabBar
 //  儿童模式弹窗屏蔽
@@ -31,11 +31,12 @@ static void PPTransparentizeViews(UIView *view) {
 
         // 2. UINavigationBar 透明化
         if ([view isKindOfClass:[UINavigationBar class]]) {
+            UINavigationBar *navBar = (UINavigationBar *)view;
             [UIView performWithoutAnimation:^{
-                view.backgroundColor = [UIColor clearColor];
-                view.translucent = YES;
+                navBar.backgroundColor = [UIColor clearColor];
+                navBar.translucent = YES;
                 // 遍历子视图，将所有背景视图透明
-                for (UIView *sub in view.subviews) {
+                for (UIView *sub in navBar.subviews) {
                     if ([sub isKindOfClass:NSClassFromString(@"_UIBarBackground")] ||
                         [sub isKindOfClass:NSClassFromString(@"UIVisualEffectView")]) {
                         sub.alpha = 0.0;
@@ -44,17 +45,16 @@ static void PPTransparentizeViews(UIView *view) {
                     // 透明化 _UINavigationBarContentView 中的按钮（如搜索）
                     if ([sub isKindOfClass:NSClassFromString(@"_UINavigationBarContentView")]) {
                         for (UIView *inner in sub.subviews) {
+                            // 查找按钮（可能是 UIButton 或 UIBarButtonItem 的视图）
                             if ([inner isKindOfClass:[UIButton class]]) {
                                 UIButton *btn = (UIButton *)inner;
-                                // 通过 accessibilityLabel 或 image 识别搜索按钮
                                 if ([btn.accessibilityLabel isEqualToString:@"搜索"] || [btn.accessibilityLabel containsString:@"搜索"]) {
                                     btn.alpha = 0.0;
                                     btn.userInteractionEnabled = YES;
                                 }
                             }
-                            // 也可能是 UIBarButtonItem 的视图，通过类名识别
+                            // 也可能是 UIBarButtonItem 的视图（类名包含 BarButton）
                             if ([NSStringFromClass([inner class]) containsString:@"BarButton"]) {
-                                // 尝试找到内部的按钮
                                 for (UIView *subInner in inner.subviews) {
                                     if ([subInner isKindOfClass:[UIButton class]]) {
                                         UIButton *btn = (UIButton *)subInner;
@@ -69,7 +69,7 @@ static void PPTransparentizeViews(UIView *view) {
                     }
                 }
             }];
-            // 处理完 UINavigationBar 后继续遍历其子视图（但可能已经处理了）
+            // 继续遍历子视图（虽然已经处理了，但可能还有更深层的）
         }
 
         // 3. 顶部标签容器（包含关注、推荐等）
@@ -167,8 +167,10 @@ static BOOL PPShouldBlockAlert(UIViewController *vc) {
     if (PPShouldApply()) {
         static dispatch_once_t onceToken;
         dispatch_once(&onceToken, ^{
-            // 在视图即将显示时立即执行，无延迟
-            PPProcessAllWindows();
+            // 在视图即将显示时异步执行，确保子视图已加载，但用户无感知
+            dispatch_async(dispatch_get_main_queue(), ^{
+                PPProcessAllWindows();
+            });
         });
     }
 }
