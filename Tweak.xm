@@ -1,10 +1,8 @@
 // =============================================================
-//  PiPiNoTabs — 全屏透明化版（无痕快速）
-//  底部 TabBar 完全透明不可交互
-//  顶部导航栏容器背景透明，文字透明但可点击
-//  搜索图标透明但可点击
+//  PiPiNoTabs — 全屏透明化终极版
+//  在 viewWillAppear 中立即执行，无延迟
+//  透明化 UINavigationBar 背景、搜索图标、顶部标签、底部 TabBar
 //  儿童模式弹窗屏蔽
-//  无延迟感（极短延迟 0.01 秒）
 // =============================================================
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
@@ -31,9 +29,51 @@ static void PPTransparentizeViews(UIView *view) {
             return;
         }
 
-        // 2. 顶部导航栏容器（包含关注、推荐等标签）
+        // 2. UINavigationBar 透明化
+        if ([view isKindOfClass:[UINavigationBar class]]) {
+            [UIView performWithoutAnimation:^{
+                view.backgroundColor = [UIColor clearColor];
+                view.translucent = YES;
+                // 遍历子视图，将所有背景视图透明
+                for (UIView *sub in view.subviews) {
+                    if ([sub isKindOfClass:NSClassFromString(@"_UIBarBackground")] ||
+                        [sub isKindOfClass:NSClassFromString(@"UIVisualEffectView")]) {
+                        sub.alpha = 0.0;
+                        sub.backgroundColor = [UIColor clearColor];
+                    }
+                    // 透明化 _UINavigationBarContentView 中的按钮（如搜索）
+                    if ([sub isKindOfClass:NSClassFromString(@"_UINavigationBarContentView")]) {
+                        for (UIView *inner in sub.subviews) {
+                            if ([inner isKindOfClass:[UIButton class]]) {
+                                UIButton *btn = (UIButton *)inner;
+                                // 通过 accessibilityLabel 或 image 识别搜索按钮
+                                if ([btn.accessibilityLabel isEqualToString:@"搜索"] || [btn.accessibilityLabel containsString:@"搜索"]) {
+                                    btn.alpha = 0.0;
+                                    btn.userInteractionEnabled = YES;
+                                }
+                            }
+                            // 也可能是 UIBarButtonItem 的视图，通过类名识别
+                            if ([NSStringFromClass([inner class]) containsString:@"BarButton"]) {
+                                // 尝试找到内部的按钮
+                                for (UIView *subInner in inner.subviews) {
+                                    if ([subInner isKindOfClass:[UIButton class]]) {
+                                        UIButton *btn = (UIButton *)subInner;
+                                        if ([btn.accessibilityLabel isEqualToString:@"搜索"] || [btn.accessibilityLabel containsString:@"搜索"]) {
+                                            btn.alpha = 0.0;
+                                            btn.userInteractionEnabled = YES;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }];
+            // 处理完 UINavigationBar 后继续遍历其子视图（但可能已经处理了）
+        }
+
+        // 3. 顶部标签容器（包含关注、推荐等）
         if ([view isKindOfClass:[UIView class]]) {
-            // 检查是否包含目标标签
             __block BOOL hasTarget = NO;
             for (UIView *sub in view.subviews) {
                 if ([sub isKindOfClass:[UILabel class]]) {
@@ -48,17 +88,17 @@ static void PPTransparentizeViews(UIView *view) {
                 }
                 if (hasTarget) break;
             }
-            if (hasTarget && ![NSStringFromClass([view class]) isEqualToString:@"TTTabbar"]) {
+            // 如果包含目标标签且不是 TabBar 或 NavigationBar
+            if (hasTarget && ![view isKindOfClass:[UINavigationBar class]] && ![NSStringFromClass([view class]) isEqualToString:@"TTTabbar"]) {
                 [UIView performWithoutAnimation:^{
                     view.backgroundColor = [UIColor clearColor];
                     view.opaque = NO;
-                    // 透明化所有子视图中的 UILabel
                     for (UIView *sub in view.subviews) {
                         if ([sub isKindOfClass:[UILabel class]]) {
                             sub.alpha = 0.0;
                         }
                     }
-                    // 透明化搜索图标（UIButton 且 accessibilityLabel 为搜索）
+                    // 也透明化可能存在的搜索图标
                     for (UIView *sub in view.subviews) {
                         if ([sub isKindOfClass:[UIButton class]]) {
                             UIButton *btn = (UIButton *)sub;
@@ -68,24 +108,12 @@ static void PPTransparentizeViews(UIView *view) {
                             }
                         }
                     }
-                    // 递归更深层（确保搜索图标在更深的层级也被覆盖）
-                    for (UIView *sub in view.subviews) {
-                        for (UIView *inner in sub.subviews) {
-                            if ([inner isKindOfClass:[UIButton class]]) {
-                                UIButton *btn = (UIButton *)inner;
-                                if ([btn.accessibilityLabel isEqualToString:@"搜索"] || [btn.accessibilityLabel containsString:@"搜索"]) {
-                                    btn.alpha = 0.0;
-                                    btn.userInteractionEnabled = YES;
-                                }
-                            }
-                        }
-                    }
                 }];
-                return; // 处理完容器后不再深入
+                return;
             }
         }
 
-        // 3. 单独处理搜索图标（如果之前没处理到）
+        // 4. 单独处理搜索图标（可能在导航栏其他地方）
         if ([view isKindOfClass:[UIButton class]]) {
             UIButton *btn = (UIButton *)view;
             if ([btn.accessibilityLabel isEqualToString:@"搜索"] || [btn.accessibilityLabel containsString:@"搜索"]) {
@@ -134,24 +162,21 @@ static BOOL PPShouldBlockAlert(UIViewController *vc) {
     }
     %orig;
 }
-- (void)viewDidAppear:(BOOL)animated {
+- (void)viewWillAppear:(BOOL)animated {
     %orig;
     if (PPShouldApply()) {
         static dispatch_once_t onceToken;
         dispatch_once(&onceToken, ^{
-            // 极短延迟（0.01秒），确保视图完全加载，用户无感知
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.01 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                PPProcessAllWindows();
-            });
+            // 在视图即将显示时立即执行，无延迟
+            PPProcessAllWindows();
         });
     }
 }
 %end
 
-// ---------- 加载入口 ----------
 %ctor {
     if (PPShouldApply()) {
-        // 立即尝试一次（可能部分视图未加载）
+        // 尽早执行一次，但可能视图未加载
         dispatch_async(dispatch_get_main_queue(), ^{
             PPProcessAllWindows();
         });
