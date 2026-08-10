@@ -1,8 +1,8 @@
 // =============================================================
-//  PiPiNoTabs — 透明化版
-//  底部 TabBar 完全透明且不可交互
-//  顶部「关注、推荐、视频、图片、虾聊、文字、搜索」透明但可点击
-//  无手势、无弹窗、无布局调整
+//  PiPiNoTabs — 全屏透明化版
+//  底部 TabBar 完全透明不可交互
+//  顶部导航栏容器背景透明，文字透明但可点击
+//  儿童模式弹窗屏蔽
 // =============================================================
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
@@ -10,6 +10,32 @@
 static BOOL PPShouldApply() {
     NSString *bundleID = [[NSBundle mainBundle] bundleIdentifier];
     return [bundleID isEqualToString:@"com.bd.iphone.superPropipi"];
+}
+
+// 检查一个视图是否包含目标标签（用于识别顶部容器）
+static BOOL PPViewContainsTargetLabels(UIView *view) {
+    if (!view) return NO;
+    // 目标文字
+    NSArray *targetTitles = @[@"关注", @"推荐", @"视频", @"图片", @"虾聊", @"文字"];
+    // 递归检查子视图中的 UILabel
+    __block BOOL found = NO;
+    void (^checkSubviews)(UIView *) = ^(UIView *v) {
+        if ([v isKindOfClass:[UILabel class]]) {
+            UILabel *label = (UILabel *)v;
+            for (NSString *title in targetTitles) {
+                if ([label.text isEqualToString:title]) {
+                    found = YES;
+                    return;
+                }
+            }
+        }
+        for (UIView *sub in v.subviews) {
+            checkSubviews(sub);
+            if (found) break;
+        }
+    };
+    checkSubviews(view);
+    return found;
 }
 
 // ---------- 递归遍历视图，透明化目标 ----------
@@ -20,8 +46,7 @@ static void PPTransparentizeViews(UIView *view) {
     if ([NSStringFromClass([view class]) isEqualToString:@"TTTabbar"]) {
         [UIView performWithoutAnimation:^{
             view.alpha = 0.0;
-            view.userInteractionEnabled = NO;  // 不可交互，避免误触
-            // 子视图也透明化
+            view.userInteractionEnabled = NO;
             for (UIView *sub in view.subviews) {
                 sub.alpha = 0.0;
                 sub.userInteractionEnabled = NO;
@@ -30,37 +55,50 @@ static void PPTransparentizeViews(UIView *view) {
         return;
     }
     
-    // 2. 透明化顶部选项（通过文字匹配）
-    if ([view isKindOfClass:[UILabel class]]) {
-        UILabel *label = (UILabel *)view;
-        NSArray *targetTitles = @[@"关注", @"推荐", @"视频", @"图片", @"虾聊", @"文字"];
-        for (NSString *title in targetTitles) {
-            if ([label.text isEqualToString:title]) {
-                [UIView performWithoutAnimation:^{
-                    label.alpha = 0.0;
-                    // 保持可交互（如果父视图是按钮，其交互不受影响）
-                    // 如果 label 本身有手势，需要保留，但一般 label 是按钮的子视图
-                }];
-                break;
-            }
+    // 2. 透明化顶部容器（包含“关注”、“推荐”等标签的容器）
+    // 检查当前视图是否是容器且包含目标标签
+    if ([view isKindOfClass:[UIView class]] && PPViewContainsTargetLabels(view)) {
+        // 确保不是 TabBar（已处理）
+        if (![NSStringFromClass([view class]) isEqualToString:@"TTTabbar"]) {
+            [UIView performWithoutAnimation:^{
+                // 背景透明
+                view.backgroundColor = [UIColor clearColor];
+                view.opaque = NO;
+                // 子视图中的标签文字透明，但保留交互
+                for (UIView *sub in view.subviews) {
+                    if ([sub isKindOfClass:[UILabel class]]) {
+                        sub.alpha = 0.0;
+                        // 保持可点击（如果有手势，仍会触发）
+                    }
+                }
+                // 搜索图标透明但可点击（通过accessibilityLabel识别）
+                for (UIView *sub in view.subviews) {
+                    if ([sub isKindOfClass:[UIButton class]]) {
+                        UIButton *btn = (UIButton *)sub;
+                        if ([btn.accessibilityLabel isEqualToString:@"搜索"] || [btn.accessibilityLabel containsString:@"搜索"]) {
+                            btn.alpha = 0.0;
+                            btn.userInteractionEnabled = YES;
+                        }
+                    }
+                }
+            }];
+            // 已处理此容器，不继续遍历其子视图（避免重复处理）
+            return;
         }
     }
     
-    // 3. 透明化搜索图标（通常是 UIButton 或 UIBarButtonItem）
+    // 3. 单独处理搜索图标（可能在导航栏其他位置）
     if ([view isKindOfClass:[UIButton class]]) {
         UIButton *btn = (UIButton *)view;
-        // 如果按钮是搜索图标（可根据 image 或 accessibilityLabel 判断）
-        // 简化：如果按钮的 image 是搜索图标，或 accessibilityLabel 为 "搜索"
-        NSString *accessibilityLabel = btn.accessibilityLabel;
-        if ([accessibilityLabel isEqualToString:@"搜索"] || [accessibilityLabel containsString:@"搜索"]) {
+        if ([btn.accessibilityLabel isEqualToString:@"搜索"] || [btn.accessibilityLabel containsString:@"搜索"]) {
             [UIView performWithoutAnimation:^{
                 btn.alpha = 0.0;
-                btn.userInteractionEnabled = YES; // 保持可点击
+                btn.userInteractionEnabled = YES;
             }];
         }
     }
     
-    // 递归遍历子视图
+    // 4. 递归遍历子视图
     for (UIView *sub in view.subviews) {
         PPTransparentizeViews(sub);
     }
@@ -103,7 +141,6 @@ static BOOL PPShouldBlockAlert(UIViewController *vc) {
     if (PPShouldApply()) {
         static dispatch_once_t onceToken;
         dispatch_once(&onceToken, ^{
-            // 延迟极短时间，确保视图加载完成
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
                 PPProcessAllWindows();
             });
@@ -114,7 +151,6 @@ static BOOL PPShouldBlockAlert(UIViewController *vc) {
 
 %ctor {
     if (PPShouldApply()) {
-        // 立即执行，可能部分视图未加载，但没关系
         dispatch_async(dispatch_get_main_queue(), ^{
             PPProcessAllWindows();
         });
