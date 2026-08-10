@@ -1,6 +1,5 @@
 // =============================================================
-//  PiPiNoTabs — 最终布局修复版（Hook layoutSubviews）
-//  隐藏「发现」「加号」「消息」，保留「首页」「我的」均匀分布
+//  PiPiNoTabs — 最终布局修复版（修复编译错误）
 // =============================================================
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
@@ -10,7 +9,6 @@ static BOOL PPShouldApply() {
     return [bundleID isEqualToString:@"com.bd.iphone.superPropipi"];
 }
 
-// 重新布局函数
 static void PPHideAndRearrange(UIView *tabBar) {
     if (!tabBar) return;
     if (![NSStringFromClass([tabBar class]) isEqualToString:@"TTTabbar"]) return;
@@ -42,7 +40,6 @@ static void PPHideAndRearrange(UIView *tabBar) {
         }
     }
     
-    // 强制设置保留按钮的 frame 为均匀分布
     if (keepButtons.count == 2) {
         CGFloat width = tabBar.frame.size.width / keepButtons.count;
         CGFloat height = tabBar.frame.size.height;
@@ -51,7 +48,6 @@ static void PPHideAndRearrange(UIView *tabBar) {
             [UIView performWithoutAnimation:^{
                 btn.frame = CGRectMake(i * width, 0, width, height);
                 btn.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-                // 如果使用了 Auto Layout，禁用约束
                 if (btn.translatesAutoresizingMaskIntoConstraints) {
                     btn.translatesAutoresizingMaskIntoConstraints = YES;
                 }
@@ -68,7 +64,6 @@ static void PPHideAndRearrange(UIView *tabBar) {
     }
 }
 
-// 递归查找 TTTabbar
 static void PPFindAndProcessTabBar(UIView *view) {
     if (!view) return;
     if ([NSStringFromClass([view class]) isEqualToString:@"TTTabbar"]) {
@@ -80,13 +75,12 @@ static void PPFindAndProcessTabBar(UIView *view) {
     }
 }
 
-// ---------- Hook TTTabbar 的 layoutSubviews ----------
+// ---------- Hook TTTabbar ----------
 %hook TTTabbar
 - (void)layoutSubviews {
     %orig;
     if (PPShouldApply()) {
-        // 每次布局后重新应用隐藏和布局
-        PPHideAndRearrange(self);
+        PPHideAndRearrange((UIView *)self);
     }
 }
 %end
@@ -114,15 +108,18 @@ static BOOL PPShouldBlockAlert(UIViewController *vc) {
 }
 %end
 
-// ---------- 加载确认 ----------
+// ---------- 加载确认（使用 UIAlertView 忽略警告） ----------
 static void PPShowAlert(NSString *msg) {
     dispatch_async(dispatch_get_main_queue(), ^{
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
         UIAlertView *alert = [[UIAlertView alloc] initWithTitle:@"PiPiNoTabs"
                                                         message:msg
                                                        delegate:nil
                                               cancelButtonTitle:@"OK"
                                               otherButtonTitles:nil];
         [alert show];
+#pragma clang diagnostic pop
     });
 }
 
