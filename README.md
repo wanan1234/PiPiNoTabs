@@ -18,7 +18,7 @@ PiPiNoTabs
 
 系统：iOS 14.0 或更高版本
 
-应用：皮皮虾（Bundle ID: com.bd.iphone.superPropipi）
+应用：皮皮虾5.4.5 pro（Bundle ID: com.bd.iphone.superPropipi）
 
 📦 安装方法
 使用 TrollStore + TrollFools
