@@ -1,149 +1,79 @@
 // =============================================================
-//  PiPiNoTabs — 最终稳定版（即时隐藏 + 双指双击菜单）
-//  隐藏「发现」「加号」「消息」，保留「首页」「我的」均匀分布
-//  双指双击弹出菜单，可开启/关闭隐藏
+//  PiPiNoTabs — 透明化版
+//  底部 TabBar 完全透明且不可交互
+//  顶部「关注、推荐、视频、图片、虾聊、文字、搜索」透明但可点击
+//  无手势、无弹窗、无布局调整
 // =============================================================
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
-
-static NSString * const kPPEnabledKey = @"PiPiNoTabs_Enabled";
-static NSMutableDictionary *PPOriginalFrames = nil;
-static NSMutableDictionary *PPOriginalHidden = nil;
 
 static BOOL PPShouldApply() {
     NSString *bundleID = [[NSBundle mainBundle] bundleIdentifier];
     return [bundleID isEqualToString:@"com.bd.iphone.superPropipi"];
 }
 
-static BOOL PPIsEnabled() {
-    NSUserDefaults *def = [NSUserDefaults standardUserDefaults];
-    if ([def objectForKey:kPPEnabledKey] == nil) return YES;
-    return [def boolForKey:kPPEnabledKey];
-}
-
-static void PPSetEnabled(BOOL enabled) {
-    [[NSUserDefaults standardUserDefaults] setBool:enabled forKey:kPPEnabledKey];
-    [[NSUserDefaults standardUserDefaults] synchronize];
-}
-
-// 保存原始状态
-static void PPSaveOriginalState(UIView *tabBar) {
-    if (!tabBar) return;
-    if (!PPOriginalFrames) {
-        PPOriginalFrames = [NSMutableDictionary dictionary];
-        PPOriginalHidden = [NSMutableDictionary dictionary];
-    }
-    NSString *key = [NSString stringWithFormat:@"%p", tabBar];
-    NSMutableArray *frames = [NSMutableArray array];
-    NSMutableArray *hiddens = [NSMutableArray array];
-    for (UIView *sub in tabBar.subviews) {
-        [frames addObject:[NSValue valueWithCGRect:sub.frame]];
-        [hiddens addObject:@(sub.hidden)];
-    }
-    PPOriginalFrames[key] = frames;
-    PPOriginalHidden[key] = hiddens;
-}
-
-// 恢复原始状态
-static void PPRestoreOriginalState(UIView *tabBar) {
-    if (!tabBar) return;
-    if (!PPOriginalFrames) return;
-    NSString *key = [NSString stringWithFormat:@"%p", tabBar];
-    NSArray *frames = PPOriginalFrames[key];
-    NSArray *hiddens = PPOriginalHidden[key];
-    if (!frames || !hiddens) return;
-    NSArray *subviews = tabBar.subviews;
-    for (NSInteger i = 0; i < subviews.count && i < frames.count; i++) {
-        UIView *sub = subviews[i];
-        sub.frame = [frames[i] CGRectValue];
-        sub.hidden = [hiddens[i] boolValue];
-        sub.alpha = sub.hidden ? 1.0 : 1.0;
-        sub.userInteractionEnabled = YES;
-    }
-    [tabBar setNeedsLayout];
-    [tabBar layoutIfNeeded];
-}
-
-// 隐藏并重新布局
-static void PPHideAndRearrange(UIView *tabBar) {
-    if (!tabBar) return;
-    if (![NSStringFromClass([tabBar class]) isEqualToString:@"TTTabbar"]) return;
+// ---------- 递归遍历视图，透明化目标 ----------
+static void PPTransparentizeViews(UIView *view) {
+    if (!view) return;
     
-    // 如果未启用，恢复原始状态
-    if (!PPIsEnabled()) {
-        PPRestoreOriginalState(tabBar);
+    // 1. 透明化底部 TabBar（TTTabbar）
+    if ([NSStringFromClass([view class]) isEqualToString:@"TTTabbar"]) {
+        [UIView performWithoutAnimation:^{
+            view.alpha = 0.0;
+            view.userInteractionEnabled = NO;  // 不可交互，避免误触
+            // 子视图也透明化
+            for (UIView *sub in view.subviews) {
+                sub.alpha = 0.0;
+                sub.userInteractionEnabled = NO;
+            }
+        }];
         return;
     }
     
-    // 首次处理时保存原始状态
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        PPSaveOriginalState(tabBar);
-    });
-    
-    // 收集按钮
-    NSMutableArray *buttons = [NSMutableArray arrayWithArray:tabBar.subviews];
-    if (buttons.count == 0) return;
-    
-    NSMutableArray *keepButtons = [NSMutableArray array];
-    for (UIView *btn in buttons) {
-        NSString *title = nil;
-        for (UIView *inner in btn.subviews) {
-            if ([inner isKindOfClass:[UILabel class]]) {
-                title = ((UILabel *)inner).text;
+    // 2. 透明化顶部选项（通过文字匹配）
+    if ([view isKindOfClass:[UILabel class]]) {
+        UILabel *label = (UILabel *)view;
+        NSArray *targetTitles = @[@"关注", @"推荐", @"视频", @"图片", @"虾聊", @"文字"];
+        for (NSString *title in targetTitles) {
+            if ([label.text isEqualToString:title]) {
+                [UIView performWithoutAnimation:^{
+                    label.alpha = 0.0;
+                    // 保持可交互（如果父视图是按钮，其交互不受影响）
+                    // 如果 label 本身有手势，需要保留，但一般 label 是按钮的子视图
+                }];
                 break;
             }
         }
-        if (!title) {
-            @try { title = [btn valueForKey:@"title"]; } @catch (NSException *e) {}
-        }
-        if (title && ([title isEqualToString:@"首页"] || [title isEqualToString:@"我的"])) {
-            [keepButtons addObject:btn];
-        } else {
-            btn.hidden = YES;
-            btn.alpha = 0.0;
-            btn.userInteractionEnabled = NO;
+    }
+    
+    // 3. 透明化搜索图标（通常是 UIButton 或 UIBarButtonItem）
+    if ([view isKindOfClass:[UIButton class]]) {
+        UIButton *btn = (UIButton *)view;
+        // 如果按钮是搜索图标（可根据 image 或 accessibilityLabel 判断）
+        // 简化：如果按钮的 image 是搜索图标，或 accessibilityLabel 为 "搜索"
+        NSString *accessibilityLabel = btn.accessibilityLabel;
+        if ([accessibilityLabel isEqualToString:@"搜索"] || [accessibilityLabel containsString:@"搜索"]) {
+            [UIView performWithoutAnimation:^{
+                btn.alpha = 0.0;
+                btn.userInteractionEnabled = YES; // 保持可点击
+            }];
         }
     }
     
-    // 重新布局
-    if (keepButtons.count == 2) {
-        CGFloat width = tabBar.frame.size.width / keepButtons.count;
-        CGFloat height = tabBar.frame.size.height;
-        for (NSInteger i = 0; i < keepButtons.count; i++) {
-            UIView *btn = keepButtons[i];
-            [UIView performWithoutAnimation:^{
-                btn.frame = CGRectMake(i * width, 0, width, height);
-                btn.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-                for (UIView *sub in btn.subviews) {
-                    sub.frame = btn.bounds;
-                    if ([sub isKindOfClass:[UILabel class]]) {
-                        ((UILabel *)sub).textAlignment = NSTextAlignmentCenter;
-                    }
-                }
-            }];
-        }
-        [tabBar setNeedsLayout];
-        [tabBar layoutIfNeeded];
-    }
-}
-
-// 递归查找并处理 TTTabbar
-static void PPFindAndProcessTabBar(UIView *view) {
-    if (!view) return;
-    if ([NSStringFromClass([view class]) isEqualToString:@"TTTabbar"]) {
-        PPHideAndRearrange(view);
-        return;
-    }
+    // 递归遍历子视图
     for (UIView *sub in view.subviews) {
-        PPFindAndProcessTabBar(sub);
+        PPTransparentizeViews(sub);
     }
 }
 
-// 处理所有窗口
+// ---------- 主处理函数 ----------
 static void PPProcessAllWindows() {
-    for (UIWindow *window in [UIApplication sharedApplication].windows) {
-        PPFindAndProcessTabBar(window);
+    @try {
+        for (UIWindow *window in [UIApplication sharedApplication].windows) {
+            PPTransparentizeViews(window);
+        }
+    } @catch (NSException *e) {
+        // 静默失败
     }
 }
 
@@ -173,6 +103,7 @@ static BOOL PPShouldBlockAlert(UIViewController *vc) {
     if (PPShouldApply()) {
         static dispatch_once_t onceToken;
         dispatch_once(&onceToken, ^{
+            // 延迟极短时间，确保视图加载完成
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
                 PPProcessAllWindows();
             });
@@ -181,64 +112,9 @@ static BOOL PPShouldBlockAlert(UIViewController *vc) {
 }
 %end
 
-// ---------- 双指双击菜单 ----------
-static void PPShowMenu() {
-    UIWindow *window = [UIApplication sharedApplication].windows.firstObject;
-    if (!window) return;
-    UIViewController *root = window.rootViewController;
-    if (!root) return;
-    BOOL enabled = PPIsEnabled();
-    NSString *title = enabled ? @"当前：已隐藏" : @"当前：显示";
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"PiPiNoTabs"
-                                                                   message:title
-                                                            preferredStyle:UIAlertControllerStyleAlert];
-    UIAlertAction *toggle = [UIAlertAction actionWithTitle:enabled ? @"关闭隐藏" : @"开启隐藏"
-                                                     style:UIAlertActionStyleDefault
-                                                   handler:^(UIAlertAction * _Nonnull action) {
-                                                       PPSetEnabled(!enabled);
-                                                       PPProcessAllWindows();
-                                                   }];
-    UIAlertAction *cancel = [UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil];
-    [alert addAction:toggle];
-    [alert addAction:cancel];
-    [root presentViewController:alert animated:YES completion:nil];
-}
-
-// 手势处理类
-@interface PPGestureTarget : NSObject
-@end
-@implementation PPGestureTarget
-- (void)handleDoubleTap:(UITapGestureRecognizer *)gesture {
-    PPShowMenu();
-}
-@end
-
-static void PPAddGesture() {
-    UIWindow *window = [UIApplication sharedApplication].windows.firstObject;
-    if (!window) return;
-    for (UIGestureRecognizer *g in window.gestureRecognizers) {
-        if ([g isKindOfClass:[UITapGestureRecognizer class]]) {
-            UITapGestureRecognizer *tap = (UITapGestureRecognizer *)g;
-            if (tap.numberOfTapsRequired == 2 && tap.numberOfTouchesRequired == 2) {
-                return;
-            }
-        }
-    }
-    static PPGestureTarget *target = nil;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        target = [[PPGestureTarget alloc] init];
-    });
-    UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc] initWithTarget:target action:@selector(handleDoubleTap:)];
-    tap.numberOfTapsRequired = 2;
-    tap.numberOfTouchesRequired = 2;
-    [window addGestureRecognizer:tap];
-}
-
 %ctor {
     if (PPShouldApply()) {
-        PPAddGesture();
-        // 立即尝试处理（可能视图未加载，但没关系）
+        // 立即执行，可能部分视图未加载，但没关系
         dispatch_async(dispatch_get_main_queue(), ^{
             PPProcessAllWindows();
         });
