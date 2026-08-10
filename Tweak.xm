@@ -1,9 +1,7 @@
 // =============================================================
-//  PiPiNoTabs — 全屏透明化版（无痕）
-//  底部 TabBar 完全透明不可交互
-//  顶部导航栏容器背景透明，文字透明但可点击
-//  搜索图标透明但可点击
-//  儿童模式弹窗屏蔽
+//  PiPiNoTabs — 全屏透明化稳定版
+//  底部 TabBar 完全透明，顶部导航栏背景透明，文字透明但可点击
+//  无弹窗、无手势、无布局调整
 // =============================================================
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
@@ -13,85 +11,79 @@ static BOOL PPShouldApply() {
     return [bundleID isEqualToString:@"com.bd.iphone.superPropipi"];
 }
 
-// 检查一个视图是否包含目标标签（用于识别顶部容器）
-static BOOL PPViewContainsTargetLabels(UIView *view) {
-    if (!view) return NO;
-    NSArray *targetTitles = @[@"关注", @"推荐", @"视频", @"图片", @"虾聊", @"文字"];
-    __block BOOL found = NO;
-    void (^checkSubviews)(UIView *) = ^(UIView *v) {
-        if ([v isKindOfClass:[UILabel class]]) {
-            UILabel *label = (UILabel *)v;
-            for (NSString *title in targetTitles) {
-                if ([label.text isEqualToString:title]) {
-                    found = YES;
-                    return;
-                }
-            }
-        }
-        for (UIView *sub in v.subviews) {
-            checkSubviews(sub);
-            if (found) break;
-        }
-    };
-    checkSubviews(view);
-    return found;
-}
-
-// ---------- 递归遍历视图，透明化目标 ----------
-static void PPTransparentizeViews(UIView *view) {
+// ---------- 透明化处理 ----------
+static void PPTransparentize(UIView *view) {
     if (!view) return;
-    
-    // 1. 透明化底部 TabBar（TTTabbar）
-    if ([NSStringFromClass([view class]) isEqualToString:@"TTTabbar"]) {
-        [UIView performWithoutAnimation:^{
-            view.alpha = 0.0;
-            view.userInteractionEnabled = NO;
-            for (UIView *sub in view.subviews) {
-                sub.alpha = 0.0;
-                sub.userInteractionEnabled = NO;
-            }
-        }];
-        return;
-    }
-    
-    // 2. 透明化顶部容器（包含“关注”、“推荐”等标签的容器）
-    if ([view isKindOfClass:[UIView class]] && PPViewContainsTargetLabels(view)) {
-        if (![NSStringFromClass([view class]) isEqualToString:@"TTTabbar"]) {
+    @try {
+        // 1. 底部 TabBar
+        if ([NSStringFromClass([view class]) isEqualToString:@"TTTabbar"]) {
             [UIView performWithoutAnimation:^{
-                // 背景透明
-                view.backgroundColor = [UIColor clearColor];
-                view.opaque = NO;
-                // 子视图中的标签文字透明，但保留交互
+                view.alpha = 0.0;
+                view.userInteractionEnabled = NO;
                 for (UIView *sub in view.subviews) {
-                    if ([sub isKindOfClass:[UILabel class]]) {
-                        sub.alpha = 0.0;
-                    }
-                    // 所有按钮透明但保留交互（包括搜索图标）
-                    if ([sub isKindOfClass:[UIButton class]]) {
-                        sub.alpha = 0.0;
-                        sub.userInteractionEnabled = YES;
-                    }
+                    sub.alpha = 0.0;
+                    sub.userInteractionEnabled = NO;
                 }
             }];
             return;
         }
-    }
-    
-    // 3. 递归遍历子视图
-    for (UIView *sub in view.subviews) {
-        PPTransparentizeViews(sub);
+        
+        // 2. 顶部容器（包含"关注"、"推荐"等标签的容器）
+        // 直接根据类名或位置判断，避免误伤
+        if ([view isKindOfClass:[UIView class]] && view.subviews.count > 0) {
+            BOOL containsTarget = NO;
+            for (UIView *sub in view.subviews) {
+                if ([sub isKindOfClass:[UILabel class]]) {
+                    UILabel *label = (UILabel *)sub;
+                    NSArray *titles = @[@"关注", @"推荐", @"视频", @"图片", @"虾聊", @"文字"];
+                    for (NSString *title in titles) {
+                        if ([label.text isEqualToString:title]) {
+                            containsTarget = YES;
+                            break;
+                        }
+                    }
+                }
+                if (containsTarget) break;
+            }
+            if (containsTarget) {
+                [UIView performWithoutAnimation:^{
+                    view.backgroundColor = [UIColor clearColor];
+                    view.opaque = NO;
+                    // 子视图文字透明
+                    for (UIView *sub in view.subviews) {
+                        if ([sub isKindOfClass:[UILabel class]]) {
+                            sub.alpha = 0.0;
+                        }
+                        // 搜索按钮透明但可点击
+                        if ([sub isKindOfClass:[UIButton class]]) {
+                            UIButton *btn = (UIButton *)sub;
+                            if ([btn.accessibilityLabel isEqualToString:@"搜索"] || [btn.accessibilityLabel containsString:@"搜索"]) {
+                                btn.alpha = 0.0;
+                                btn.userInteractionEnabled = YES;
+                            }
+                        }
+                    }
+                }];
+                // 已处理，返回
+                return;
+            }
+        }
+        
+        // 3. 递归子视图
+        for (UIView *sub in view.subviews) {
+            PPTransparentize(sub);
+        }
+    } @catch (NSException *e) {
+        // 忽略异常
     }
 }
 
-// ---------- 主处理函数 ----------
 static void PPProcessAllWindows() {
     @try {
         for (UIWindow *window in [UIApplication sharedApplication].windows) {
-            PPTransparentizeViews(window);
+            PPTransparentize(window);
         }
-    } @catch (NSException *e) {
-        // 静默失败
-    }
+    } @catch (NSException *e) {}
 }
 
 // ---------- 屏蔽儿童模式弹窗 ----------
@@ -115,32 +107,32 @@ static BOOL PPShouldBlockAlert(UIViewController *vc) {
     }
     %orig;
 }
-- (void)viewDidLoad {
-    %orig;
-    if (PPShouldApply()) {
-        // 在视图加载完成后立即执行，无延迟
-        PPProcessAllWindows();
-    }
-}
-- (void)viewWillAppear:(BOOL)animated {
-    %orig;
-    if (PPShouldApply()) {
-        // 再次执行，确保视图显示前透明
-        PPProcessAllWindows();
-    }
-}
 - (void)viewDidAppear:(BOOL)animated {
     %orig;
     if (PPShouldApply()) {
-        // 最后再执行一次，防止某些动态添加的视图
-        PPProcessAllWindows();
+        static dispatch_once_t onceToken;
+        dispatch_once(&onceToken, ^{
+            // 立即执行（无延迟），确保无痕
+            dispatch_async(dispatch_get_main_queue(), ^{
+                PPProcessAllWindows();
+            });
+        });
+    }
+}
+- (void)viewWillLayoutSubviews {
+    %orig;
+    if (PPShouldApply()) {
+        // 每次布局时重新应用透明化，防止恢复
+        dispatch_async(dispatch_get_main_queue(), ^{
+            PPProcessAllWindows();
+        });
     }
 }
 %end
 
 %ctor {
     if (PPShouldApply()) {
-        // 立即尝试处理（可能视图未加载，但没关系）
+        // 最早时机执行
         dispatch_async(dispatch_get_main_queue(), ^{
             PPProcessAllWindows();
         });
