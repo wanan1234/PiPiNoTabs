@@ -1,10 +1,8 @@
 // =============================================================
-//  PiPiNoTabs — 稳定快速版（隐藏顶部文字 + 底部Tab）
-//  顶部标签文字透明，白色背景保留
-//  底部 TabBar 完全透明不可交互
-//  搜索图标透明但可点击
-//  儿童模式弹窗屏蔽
-//  执行时机：viewWillAppear 同步执行，无延迟
+//  PiPiNoTabs — 稳定增强版（多次应用透明化）
+//  在 viewDidAppear、viewDidLayoutSubviews 中执行
+//  Hook TTTabbar 的 layoutSubviews 持续透明化
+//  搜索图标多重识别
 // =============================================================
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
@@ -14,9 +12,14 @@ static BOOL PPShouldApply() {
     return [bundleID isEqualToString:@"com.bd.iphone.superPropipi"];
 }
 
+// ---------- 全局标记，防止无限递归 ----------
+static BOOL isApplying = NO;
+
 // ---------- 递归透明化 ----------
 static void PPTransparentizeViews(UIView *view) {
     if (!view) return;
+    if (isApplying) return;
+    isApplying = YES;
     @try {
         // 1. 底部 TabBar（TTTabbar）
         if ([NSStringFromClass([view class]) isEqualToString:@"TTTabbar"]) {
@@ -28,6 +31,7 @@ static void PPTransparentizeViews(UIView *view) {
                     sub.userInteractionEnabled = NO;
                 }
             }];
+            isApplying = NO;
             return;
         }
 
@@ -39,17 +43,34 @@ static void PPTransparentizeViews(UIView *view) {
                 if ([label.text isEqualToString:title]) {
                     [UIView performWithoutAnimation:^{
                         label.alpha = 0.0;
-                        // 保持可交互（如果父视图是按钮，其交互不受影响）
                     }];
                     break;
                 }
             }
         }
 
-        // 3. 搜索图标透明但可点击
+        // 3. 搜索图标透明但可点击（多重识别）
         if ([view isKindOfClass:[UIButton class]]) {
             UIButton *btn = (UIButton *)view;
+            // 通过 accessibilityLabel
             if ([btn.accessibilityLabel isEqualToString:@"搜索"] || [btn.accessibilityLabel containsString:@"搜索"]) {
+                [UIView performWithoutAnimation:^{
+                    btn.alpha = 0.0;
+                    btn.userInteractionEnabled = YES;
+                }];
+            }
+            // 通过 image 的 accessibilityIdentifier
+            if (btn.imageView) {
+                NSString *imageAccessibility = btn.imageView.accessibilityIdentifier;
+                if ([imageAccessibility containsString:@"search"] || [imageAccessibility containsString:@"Search"]) {
+                    [UIView performWithoutAnimation:^{
+                        btn.alpha = 0.0;
+                        btn.userInteractionEnabled = YES;
+                    }];
+                }
+            }
+            // 通过类名包含 Search
+            if ([NSStringFromClass([btn class]) containsString:@"Search"]) {
                 [UIView performWithoutAnimation:^{
                     btn.alpha = 0.0;
                     btn.userInteractionEnabled = YES;
@@ -62,8 +83,9 @@ static void PPTransparentizeViews(UIView *view) {
             PPTransparentizeViews(sub);
         }
     } @catch (NSException *e) {
-        // 忽略异常
+        // 忽略
     }
+    isApplying = NO;
 }
 
 // ---------- 处理所有窗口 ----------
@@ -87,7 +109,20 @@ static BOOL PPShouldBlockAlert(UIViewController *vc) {
     return NO;
 }
 
-// ---------- Hook ----------
+// ---------- Hook TTTabbar 的 layoutSubviews ----------
+%hook TTTabbar
+- (void)layoutSubviews {
+    %orig;
+    if (PPShouldApply()) {
+        // 在布局后重新应用透明化
+        dispatch_async(dispatch_get_main_queue(), ^{
+            PPTransparentizeViews(self);
+        });
+    }
+}
+%end
+
+// ---------- Hook UIViewController ----------
 %hook UIViewController
 - (void)presentViewController:(UIViewController *)viewControllerToPresent animated:(BOOL)flag completion:(void (^)(void))completion {
     if (PPShouldApply() && PPShouldBlockAlert(viewControllerToPresent)) {
@@ -95,21 +130,47 @@ static BOOL PPShouldBlockAlert(UIViewController *vc) {
     }
     %orig;
 }
-- (void)viewWillAppear:(BOOL)animated {
+- (void)viewDidAppear:(BOOL)animated {
     %orig;
     if (PPShouldApply()) {
         static dispatch_once_t onceToken;
         dispatch_once(&onceToken, ^{
-            // 同步执行，视图尚未显示，用户完全看不到变化
+            // 立即执行
             PPProcessAllWindows();
+            // 延迟 0.1 秒再执行一次，应对动态加载
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                PPProcessAllWindows();
+            });
+            // 再延迟 0.3 秒执行一次，确保所有视图被覆盖
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                PPProcessAllWindows();
+            });
         });
+    }
+}
+- (void)viewDidLayoutSubviews {
+    %orig;
+    if (PPShouldApply()) {
+        // 布局变化时重新应用
+        static dispatch_once_t onceToken;
+        dispatch_once(&onceToken, ^{
+            // 使用 CADisplayLink 或定时器持续观察，但这里简单使用 dispatch_after
+            // 但为了避免冲突，我们使用一个静态标记
+        });
+        // 每次布局后都执行，但限制频率
+        static NSTimeInterval lastTime = 0;
+        NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+        if (now - lastTime > 0.2) { // 0.2秒内只执行一次
+            lastTime = now;
+            PPProcessAllWindows();
+        }
     }
 }
 %end
 
 %ctor {
     if (PPShouldApply()) {
-        // 尽早尝试，但可能视图未加载，但没关系
+        // 尽早执行一次
         dispatch_async(dispatch_get_main_queue(), ^{
             PPProcessAllWindows();
         });
