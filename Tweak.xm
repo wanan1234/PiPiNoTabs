@@ -1,6 +1,6 @@
 // =============================================================
-//  PiPiNoTabs — 增加搜索图标透明化（基于你的定时器版）
-//  功能：透明化底部 TabBar、顶部标签文字、以及搜索图标
+//  PiPiNoTabs — 通过坐标识别搜索图标（基于你的定时器版）
+//  功能：透明化底部 TabBar、顶部标签文字、以及右上角搜索图标容器
 // =============================================================
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
@@ -13,7 +13,7 @@ static BOOL PPShouldApply() {
 static void PPTransparentizeViews(UIView *view) {
     if (!view) return;
     @try {
-        // 1. 透明化底部 TabBar（包含中间的加号）
+        // 1. 透明化底部 TabBar
         if ([NSStringFromClass([view class]) isEqualToString:@"TTTabbar"]) {
             [UIView performWithoutAnimation:^{
                 view.alpha = 0.0;
@@ -40,24 +40,26 @@ static void PPTransparentizeViews(UIView *view) {
             }
         }
         
-        // 3. 透明化搜索图标（UIButton）
-        if ([view isKindOfClass:[UIButton class]]) {
-            UIButton *btn = (UIButton *)view;
-            // 通过 accessibilityLabel 或 accessibilityIdentifier 识别搜索按钮
-            NSString *label = btn.accessibilityLabel;
-            NSString *identifier = btn.accessibilityIdentifier;
-            if ((label && [label containsString:@"搜索"]) ||
-                (identifier && [identifier containsString:@"search"])) {
-                [UIView performWithoutAnimation:^{
-                    btn.alpha = 0.0;
-                    // 保持可点击（如需要）
-                    // btn.userInteractionEnabled = YES;
-                }];
+        // 3. 透明化右上角搜索图标（通过坐标识别）
+        if ([view isKindOfClass:[UIView class]]) {
+            CGRect frame = view.frame;
+            CGFloat screenWidth = [UIScreen mainScreen].bounds.size.width;
+            // 右上角区域：x > screenWidth - 100, y < 100
+            if (frame.origin.x > screenWidth - 100 && frame.origin.y < 100) {
+                // 检查是否包含 UIImageView（搜索图标通常是 UIImageView）
+                BOOL hasImageView = NO;
+                for (UIView *sub in view.subviews) {
+                    if ([sub isKindOfClass:[UIImageView class]]) {
+                        hasImageView = YES;
+                        break;
+                    }
+                }
+                if (hasImageView) {
+                    [UIView performWithoutAnimation:^{
+                        view.alpha = 0.0;
+                    }];
+                }
             }
-            // 如果按钮的 image 是搜索图标（可通过 image 的 accessibilityIdentifier 判断，但此处简化）
-            // 或通过父视图类名判断（如果按钮在 UINavigationBar 中）
-            // 更通用：如果按钮在 UINavigationBar 中且只有一个 UIImageView，可能为搜索按钮
-            // 但这里我们用 accessibility 识别
         }
         
         // 递归子视图
