@@ -1,6 +1,6 @@
 // =============================================================
-//  PiPiNoTabs — 通过坐标识别搜索图标（基于你的定时器版）
-//  功能：透明化底部 TabBar、顶部标签文字、以及右上角搜索图标容器
+//  PiPiNoTabs — 完整版（定时器 + 搜索图标隐藏）
+//  功能：透明化底部 TabBar、顶部标签文字、以及搜索图标
 // =============================================================
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
@@ -13,7 +13,7 @@ static BOOL PPShouldApply() {
 static void PPTransparentizeViews(UIView *view) {
     if (!view) return;
     @try {
-        // 1. 透明化底部 TabBar
+        // 1. 透明化底部 TabBar（包含中间加号）
         if ([NSStringFromClass([view class]) isEqualToString:@"TTTabbar"]) {
             [UIView performWithoutAnimation:^{
                 view.alpha = 0.0;
@@ -40,23 +40,30 @@ static void PPTransparentizeViews(UIView *view) {
             }
         }
         
-        // 3. 透明化右上角搜索图标（通过坐标识别）
+        // 3. 透明化搜索图标所在容器（UIView 包含 UIButton + UIImageView，且父视图是 UINavigationBar）
         if ([view isKindOfClass:[UIView class]]) {
-            CGRect frame = view.frame;
-            CGFloat screenWidth = [UIScreen mainScreen].bounds.size.width;
-            // 右上角区域：x > screenWidth - 100, y < 100
-            if (frame.origin.x > screenWidth - 100 && frame.origin.y < 100) {
-                // 检查是否包含 UIImageView（搜索图标通常是 UIImageView）
+            // 检查父视图是否是 UINavigationBar
+            if ([view.superview isKindOfClass:[UINavigationBar class]]) {
+                BOOL hasButton = NO;
                 BOOL hasImageView = NO;
                 for (UIView *sub in view.subviews) {
-                    if ([sub isKindOfClass:[UIImageView class]]) {
-                        hasImageView = YES;
-                        break;
+                    if ([sub isKindOfClass:[UIButton class]]) {
+                        hasButton = YES;
+                        // 检查按钮是否包含 UIImageView
+                        for (UIView *subsub in sub.subviews) {
+                            if ([subsub isKindOfClass:[UIImageView class]]) {
+                                hasImageView = YES;
+                                break;
+                            }
+                        }
                     }
                 }
-                if (hasImageView) {
+                if (hasButton && hasImageView) {
+                    // 很可能是搜索图标容器
                     [UIView performWithoutAnimation:^{
                         view.alpha = 0.0;
+                        // 保持容器可交互（如果需要点击）
+                        // view.userInteractionEnabled = YES;
                     }];
                 }
             }
