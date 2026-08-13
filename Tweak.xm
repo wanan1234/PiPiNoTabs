@@ -1,61 +1,56 @@
 // =============================================================
-//  PiPiNoTabs — 增强版（带双指双击开关）
+//  PiPiNoTabs — 添加双指双击控制菜单
 //  功能：透明化底部 TabBar、顶部标签文字、以及搜索图标
-//  新增：双指双击菜单控制启用/禁用
+//  手势：双指双击弹出控制菜单，可开关隐藏功能（需重启生效）
 // =============================================================
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 
-// ---------- 开关状态 ----------
+// ---------- 开关判断 ----------
 static BOOL PPIsEnabled() {
-    // 默认启用（若未设置则默认为 YES）
-    if ([[NSUserDefaults standardUserDefaults] objectForKey:@"PiPiNoTabsEnabled"] == nil) {
-        [[NSUserDefaults standardUserDefaults] setBool:YES forKey:@"PiPiNoTabsEnabled"];
-        [[NSUserDefaults standardUserDefaults] synchronize];
-    }
+    // 默认开启，用户可通过手势切换
     return [[NSUserDefaults standardUserDefaults] boolForKey:@"PiPiNoTabsEnabled"];
 }
 
 static BOOL PPShouldApply() {
     NSString *bundleID = [[NSBundle mainBundle] bundleIdentifier];
-    if (![bundleID isEqualToString:@"com.bd.iphone.superPropipi"]) {
-        return NO;
-    }
-    return PPIsEnabled();
+    return [bundleID isEqualToString:@"com.bd.iphone.superPropipi"] && PPIsEnabled();
 }
 
-// ---------- 应用或恢复视图 ----------
-static void PPApplyToView(UIView *view, BOOL hide) {
+// ---------- 透明化核心逻辑 ----------
+static void PPTransparentizeViews(UIView *view) {
     if (!view) return;
+    if (!PPIsEnabled()) return; // 开关关闭则不执行任何操作
+    
     @try {
-        // 1. TabBar
+        // 1. 透明化底部 TabBar（包含中间加号）
         if ([NSStringFromClass([view class]) isEqualToString:@"TTTabbar"]) {
             [UIView performWithoutAnimation:^{
-                view.alpha = hide ? 0.0 : 1.0;
-                view.userInteractionEnabled = !hide;
+                view.alpha = 0.0;
+                view.userInteractionEnabled = NO;
                 for (UIView *sub in view.subviews) {
-                    sub.alpha = hide ? 0.0 : 1.0;
-                    sub.userInteractionEnabled = !hide;
+                    sub.alpha = 0.0;
+                    sub.userInteractionEnabled = NO;
                 }
             }];
             return;
         }
         
-        // 2. 顶部标签文字（UILabel）
+        // 2. 透明化顶部标签文字（UILabel）
         if ([view isKindOfClass:[UILabel class]]) {
             UILabel *label = (UILabel *)view;
             NSArray *targetTitles = @[@"关注", @"推荐", @"视频", @"图片", @"图文", @"职业圈", @"虾聊", @"文字"];
             for (NSString *title in targetTitles) {
                 if ([label.text isEqualToString:title]) {
                     [UIView performWithoutAnimation:^{
-                        label.alpha = hide ? 0.0 : 1.0;
+                        label.alpha = 0.0;
                     }];
                     break;
                 }
             }
         }
         
-        // 3. 搜索图标容器
+        // 3. 透明化搜索图标所在容器
         if ([view isKindOfClass:[UIView class]]) {
             if ([view.superview isKindOfClass:[UINavigationBar class]]) {
                 BOOL hasButton = NO;
@@ -73,9 +68,7 @@ static void PPApplyToView(UIView *view, BOOL hide) {
                 }
                 if (hasButton && hasImageView) {
                     [UIView performWithoutAnimation:^{
-                        view.alpha = hide ? 0.0 : 1.0;
-                        // 保持容器可交互（如果需要点击）
-                        // view.userInteractionEnabled = !hide;
+                        view.alpha = 0.0;
                     }];
                 }
             }
@@ -83,30 +76,34 @@ static void PPApplyToView(UIView *view, BOOL hide) {
         
         // 递归子视图
         for (UIView *sub in view.subviews) {
-            PPApplyToView(sub, hide);
+            PPTransparentizeViews(sub);
         }
     } @catch (NSException *e) {}
 }
 
-static void PPProcessAllWindows(BOOL hide) {
+static void PPProcessAllWindows() {
+    if (!PPIsEnabled()) return;
     for (UIWindow *window in [UIApplication sharedApplication].windows) {
-        PPApplyToView(window, hide);
+        PPTransparentizeViews(window);
     }
 }
 
-// ---------- 定时器（重复执行，确保生效） ----------
 static void PPStartTimer() {
+    if (!PPIsEnabled()) return;
     // 立即执行一次
-    PPProcessAllWindows(PPIsEnabled());
+    PPProcessAllWindows();
     // 每隔 0.1 秒执行一次，共 15 次（持续 1.5 秒）
     for (int i = 1; i <= 15; i++) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(i * 0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            PPProcessAllWindows(PPIsEnabled());
+            PPProcessAllWindows();
         });
     }
 }
 
-// ---------- 手势控制 ----------
+// =============================================================
+// 手势控制：双指双击菜单
+// =============================================================
+
 static void showToast(NSString *msg, UIWindow *window) {
     UIViewController *top = window.rootViewController;
     while (top.presentedViewController) {
@@ -126,25 +123,33 @@ static void showSettingsMenu(UIWindow *window) {
     }
     
     BOOL enabled = PPIsEnabled();
-    NSString *status = enabled ? @"已启用" : @"已禁用";
+    NSString *status = enabled ? @"已开启" : @"已关闭";
     
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"PiPiNoTabs 控制"
-                                                                   message:[NSString stringWithFormat:@"当前状态：%@", status]
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"皮皮虾界面隐藏控制"
+                                                                   message:[NSString stringWithFormat:@"当前状态：%@\n切换后需重启 App 生效", status]
                                                             preferredStyle:UIAlertControllerStyleActionSheet];
     
-    [alert addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"%@ 隐藏功能", enabled ? @"禁用" : @"启用"]
+    NSString *actionTitle = enabled ? @"关闭隐藏功能" : @"开启隐藏功能";
+    [alert addAction:[UIAlertAction actionWithTitle:actionTitle
                                               style:UIAlertActionStyleDefault
                                             handler:^(UIAlertAction * _Nonnull action) {
-                                                BOOL newState = !enabled;
-                                                [[NSUserDefaults standardUserDefaults] setBool:newState forKey:@"PiPiNoTabsEnabled"];
-                                                [[NSUserDefaults standardUserDefaults] synchronize];
-                                                // 立即应用新状态
-                                                PPProcessAllWindows(newState);
-                                                // 如果启用，重新启动定时器（但定时器是一次性的，可以重新触发）
-                                                if (newState) {
-                                                    PPStartTimer();
+                                                // 弹出确认框，提示需要重启
+                                                UIAlertController *confirmAlert = [UIAlertController alertControllerWithTitle:@"提示"
+                                                                                                                       message:@"切换后需要重启 App 才能完全生效，确定要继续吗？"
+                                                                                                                preferredStyle:UIAlertControllerStyleAlert];
+                                                [confirmAlert addAction:[UIAlertAction actionWithTitle:@"确定" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+                                                    BOOL newState = !enabled;
+                                                    [[NSUserDefaults standardUserDefaults] setBool:newState forKey:@"PiPiNoTabsEnabled"];
+                                                    [[NSUserDefaults standardUserDefaults] synchronize];
+                                                    showToast(newState ? @"隐藏功能已开启，请重启 App" : @"隐藏功能已关闭，请重启 App", window);
+                                                }]];
+                                                [confirmAlert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+                                                
+                                                UIViewController *top = window.rootViewController;
+                                                while (top.presentedViewController) {
+                                                    top = top.presentedViewController;
                                                 }
-                                                showToast([NSString stringWithFormat:@"功能已%@", newState ? @"启用" : @"禁用"], window);
+                                                [top presentViewController:confirmAlert animated:YES completion:nil];
                                             }]];
     
     [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
@@ -169,6 +174,8 @@ static void showSettingsMenu(UIWindow *window) {
         gesture.numberOfTouchesRequired = 2;
         gesture.numberOfTapsRequired = 2;
         gesture.cancelsTouchesInView = NO;
+        gesture.delaysTouchesBegan = NO;
+        gesture.delaysTouchesEnded = NO;
         [self addGestureRecognizer:gesture];
         NSLog(@"[PiPiNoTabs] 2-finger double-tap gesture added");
     }
@@ -177,21 +184,20 @@ static void showSettingsMenu(UIWindow *window) {
 
 %new
 - (void)pp_handleDoubleTap:(UITapGestureRecognizer *)gesture {
-    if (gesture.state == UIGestureRecognizerStateRecognized) {
-        // 触觉反馈
-        if (@available(iOS 10.0, *)) {
-            UIImpactFeedbackGenerator *generator = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleMedium];
-            [generator prepare];
-            [generator impactOccurred];
-        }
-        showSettingsMenu(self);
+    if (gesture.state != UIGestureRecognizerStateRecognized) return;
+    // 触觉反馈
+    if (@available(iOS 10.0, *)) {
+        UIImpactFeedbackGenerator *generator = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleMedium];
+        [generator prepare];
+        [generator impactOccurred];
     }
+    showSettingsMenu(self);
 }
 
 %end
 
 // =============================================================
-// Hook UIViewController：在视图出现时触发定时器
+// 原有 Hook：UIViewController 触发定时任务
 // =============================================================
 %hook UIViewController
 - (void)viewDidAppear:(BOOL)animated {
@@ -208,12 +214,17 @@ static void showSettingsMenu(UIWindow *window) {
 %end
 
 // =============================================================
-// 注入入口
+// 构造函数：初始化默认状态并执行一次透明化
 // =============================================================
 %ctor {
+    if (![[NSUserDefaults standardUserDefaults] objectForKey:@"PiPiNoTabsEnabled"]) {
+        [[NSUserDefaults standardUserDefaults] setBool:YES forKey:@"PiPiNoTabsEnabled"];
+        [[NSUserDefaults standardUserDefaults] synchronize];
+    }
+    
     if (PPShouldApply()) {
         dispatch_async(dispatch_get_main_queue(), ^{
-            PPProcessAllWindows(PPIsEnabled());
+            PPProcessAllWindows();
         });
     }
 }
