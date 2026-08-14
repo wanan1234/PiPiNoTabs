@@ -1,10 +1,43 @@
 // =============================================================
-//  PiPiNoTabs — 优化版（快速隐藏 + 搜索按钮容器隐藏）
-//  双指双击菜单
+//  PiPiNoTabs — 诊断版（详细日志，分析闪烁和搜索按钮问题）
+//  双指双击菜单，日志写入沙盒 Documents
 // =============================================================
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 
+// ---------- 日志工具 ----------
+static void WriteLog(NSString *format, ...) {
+    va_list args;
+    va_start(args, format);
+    NSString *msg = [[NSString alloc] initWithFormat:format arguments:args];
+    va_end(args);
+
+    NSArray *paths = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
+    NSString *documentsDirectory = [paths firstObject];
+    NSString *logPath = [documentsDirectory stringByAppendingPathComponent:@"PiPiNoTabs.log"];
+
+    NSFileManager *fm = [NSFileManager defaultManager];
+    if (![fm fileExistsAtPath:documentsDirectory]) {
+        [fm createDirectoryAtPath:documentsDirectory withIntermediateDirectories:YES attributes:nil error:nil];
+    }
+
+    NSDateFormatter *df = [[NSDateFormatter alloc] init];
+    df.dateFormat = @"yyyy-MM-dd HH:mm:ss.SSS";
+    NSString *timestamp = [df stringFromDate:[NSDate date]];
+    NSString *line = [NSString stringWithFormat:@"[%@] %@\n", timestamp, msg];
+
+    NSFileHandle *fh = [NSFileHandle fileHandleForWritingAtPath:logPath];
+    if (!fh) {
+        [line writeToFile:logPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    } else {
+        [fh seekToEndOfFile];
+        [fh writeData:[line dataUsingEncoding:NSUTF8StringEncoding]];
+        [fh closeFile];
+    }
+    NSLog(@"[PiPiNoTabs-Diagnostic] %@", msg);
+}
+
+// ---------- 开关管理 ----------
 static BOOL PPIsEnabled() {
     return [[NSUserDefaults standardUserDefaults] boolForKey:@"PiPiNoTabsEnabled"];
 }
@@ -14,90 +47,193 @@ static BOOL PPShouldApply() {
     return [bundleID isEqualToString:@"com.bd.iphone.superPropipi"] && PPIsEnabled();
 }
 
-// 递归隐藏，但只针对特定类
-static void PPHideViewsInView(UIView *view) {
+// ---------- 视图层级诊断 ----------
+static void PPDumpViewHierarchy(UIView *view, NSInteger depth, NSMutableString *output) {
+    if (!view) return;
+    NSMutableString *indent = [NSMutableString string];
+    for (NSInteger i = 0; i < depth; i++) [indent appendString:@"  "];
+
+    NSString *className = NSStringFromClass([view class]);
+    NSString *frame = NSStringFromCGRect(view.frame);
+    NSString *hidden = view.hidden ? @"YES" : @"NO";
+    NSString *alpha = [NSString stringWithFormat:@"%.2f", view.alpha];
+    NSString *tag = [NSString stringWithFormat:@"%ld", (long)view.tag];
+    NSString *accessibility = view.accessibilityLabel ?: @"(无)";
+
+    [output appendFormat:@"%@[%@] frame=%@ hidden=%@ alpha=%@ tag=%@ a11y=%@\n",
+     indent, className, frame, hidden, alpha, tag, accessibility];
+
+    if ([view isKindOfClass:[UILabel class]]) {
+        UILabel *label = (UILabel *)view;
+        [output appendFormat:@"%@  TEXT: \"%@\"\n", indent, label.text ?: @"(空)"];
+    }
+    if ([view isKindOfClass:[UIButton class]]) {
+        UIButton *btn = (UIButton *)view;
+        [output appendFormat:@"%@  BUTTON title: \"%@\"\n", indent, [btn titleForState:UIControlStateNormal] ?: @"(无)"];
+    }
+
+    for (UIView *sub in view.subviews) {
+        PPDumpViewHierarchy(sub, depth + 1, output);
+    }
+}
+
+// ---------- 导航栏诊断 ----------
+static void PPDumpNavigationBar(UIView *rootView, NSMutableString *output) {
+    if (!rootView) return;
+
+    // 遍历查找所有 UINavigationBar
+    NSMutableArray *queue = [NSMutableArray arrayWithObject:rootView];
+    while (queue.count > 0) {
+        UIView *view = queue.firstObject;
+        [queue removeObjectAtIndex:0];
+
+        if ([view isKindOfClass:[UINavigationBar class]]) {
+            UINavigationBar *navBar = (UINavigationBar *)view;
+            [output appendFormat:@"\n=== UINavigationBar found ===\n"];
+            [output appendFormat:@"frame: %@\n", NSStringFromCGRect(navBar.frame)];
+            [output appendFormat:@"subviews count: %lu\n", (unsigned long)navBar.subviews.count];
+
+            CGFloat navWidth = navBar.bounds.size.width;
+            [output appendFormat:@"navWidth: %.1f\n", navWidth];
+
+            for (UIView *sub in navBar.subviews) {
+                CGRect subFrame = sub.frame;
+                BOOL isRight = subFrame.origin.x > navWidth / 2;
+                [output appendFormat:@"  %@ frame=%@ isRight=%d\n",
+                 NSStringFromClass([sub class]),
+                 NSStringFromCGRect(subFrame),
+                 isRight];
+
+                // 递归打印子视图
+                for (UIView *subsub in sub.subviews) {
+                    [output appendFormat:@"    %@ frame=%@\n",
+                     NSStringFromClass([subsub class]),
+                     NSStringFromCGRect(subsub.frame)];
+                }
+            }
+        }
+
+        for (UIView *sub in view.subviews) {
+            [queue addObject:sub];
+        }
+    }
+}
+
+// ---------- 核心隐藏函数（带日志） ----------
+static void PPHideAll(UIView *view, NSInteger depth, NSMutableString *log) {
     if (!view) return;
     if (!PPIsEnabled()) return;
-    
-    NSString *className = NSStringFromClass([view class]);
-    
-    // 1. 隐藏底部 TabBar
-    if ([className isEqualToString:@"TTTabbar"]) {
-        [UIView performWithoutAnimation:^{
+
+    @try {
+        NSString *className = NSStringFromClass([view class]);
+
+        // 1. 隐藏底部 TabBar（TTTabbar）
+        if ([className isEqualToString:@"TTTabbar"]) {
+            [log appendFormat:@"  找到 TTTabbar，执行隐藏\n"];
             view.hidden = YES;
             view.alpha = 0.0;
             view.userInteractionEnabled = NO;
             for (UIView *sub in view.subviews) {
                 sub.hidden = YES;
                 sub.alpha = 0.0;
-                sub.userInteractionEnabled = NO;
             }
-        }];
-        return;
-    }
-    
-    // 2. 隐藏顶部标签文字
-    if ([view isKindOfClass:[UILabel class]]) {
-        UILabel *label = (UILabel *)view;
-        NSArray *targetTitles = @[@"关注", @"推荐", @"视频", @"图片", @"图文", @"职业圈", @"虾聊", @"文字"];
-        for (NSString *title in targetTitles) {
-            if ([label.text isEqualToString:title]) {
-                [UIView performWithoutAnimation:^{
-                    label.hidden = YES;
-                    label.alpha = 0.0;
-                }];
-                break;
-            }
+            return;
         }
-    }
-    
-    // 3. 隐藏导航栏背景
-    if ([className isEqualToString:@"_UIBarBackground"] ||
-        [className isEqualToString:@"_UIBarBackgroundShadowView"] ||
-        [className isEqualToString:@"_UIBarBackgroundShadowContentImageView"]) {
-        [UIView performWithoutAnimation:^{
+
+        // 2. 隐藏导航栏背景
+        if ([className isEqualToString:@"_UIBarBackground"] ||
+            [className isEqualToString:@"_UIBarBackgroundShadowView"] ||
+            [className isEqualToString:@"_UIBarBackgroundShadowContentImageView"]) {
+            [log appendFormat:@"  隐藏导航栏背景: %@\n", className];
             view.hidden = YES;
             view.alpha = 0.0;
-        }];
-    }
-    
-    // 4. 隐藏搜索按钮容器（UIView，位于导航栏右侧，包含 UIButton 和 UIImageView）
-    if ([view isKindOfClass:[UIView class]]) {
-        UIView *parent = view.superview;
-        if (parent && [parent isKindOfClass:[UINavigationBar class]]) {
-            // 判断是否在右侧
-            CGFloat navWidth = parent.bounds.size.width;
-            if (view.frame.origin.x > navWidth / 2) {
-                BOOL hasButton = NO;
-                BOOL hasImageView = NO;
-                for (UIView *sub in view.subviews) {
-                    if ([sub isKindOfClass:[UIButton class]]) hasButton = YES;
-                    if ([sub isKindOfClass:[UIImageView class]]) hasImageView = YES;
-                }
-                if (hasButton && hasImageView) {
-                    [UIView performWithoutAnimation:^{
-                        view.hidden = YES;
-                        view.alpha = 0.0;
-                    }];
+        }
+
+        // 3. 隐藏顶部标签
+        if ([view isKindOfClass:[UILabel class]]) {
+            UILabel *label = (UILabel *)view;
+            NSArray *targets = @[@"关注", @"推荐", @"视频", @"图片", @"图文", @"职业圈", @"虾聊", @"文字"];
+            if ([targets containsObject:label.text]) {
+                [log appendFormat:@"  隐藏标签: \"%@\"\n", label.text];
+                label.hidden = YES;
+                label.alpha = 0.0;
+            }
+        }
+
+        // 4. 隐藏右上角搜索按钮（详细诊断）
+        if ([view isKindOfClass:[UIButton class]]) {
+            UIButton *btn = (UIButton *)view;
+            // 查找导航栏
+            UIView *navBar = btn.superview;
+            while (navBar && ![navBar isKindOfClass:[UINavigationBar class]]) {
+                navBar = navBar.superview;
+            }
+            if (navBar) {
+                CGRect frameInNav = [btn convertRect:btn.bounds toView:navBar];
+                CGFloat navWidth = navBar.bounds.size.width;
+                BOOL isRight = frameInNav.origin.x > navWidth / 2;
+
+                if (isRight) {
+                    [log appendFormat:@"  找到右侧按钮: %@ frame=%@\n", className, NSStringFromCGRect(frameInNav)];
+                    [log appendFormat:@"    navWidth=%.1f, x=%.1f, 父视图=%@\n",
+                     navWidth, frameInNav.origin.x, NSStringFromClass([btn.superview class])];
+
+                    // 尝试隐藏按钮及其容器
+                    UIView *container = btn.superview;
+                    if (container && container.superview == navBar) {
+                        [log appendFormat:@"  隐藏容器: %@\n", NSStringFromClass([container class])];
+                        container.hidden = YES;
+                        container.alpha = 0.0;
+                    } else {
+                        [log appendFormat:@"  隐藏按钮本身\n"];
+                        btn.hidden = YES;
+                        btn.alpha = 0.0;
+                        btn.userInteractionEnabled = NO;
+                    }
                 }
             }
         }
-    }
-    
-    // 递归子视图
-    for (UIView *sub in view.subviews) {
-        PPHideViewsInView(sub);
+
+        // 递归子视图
+        for (UIView *sub in view.subviews) {
+            PPHideAll(sub, depth + 1, log);
+        }
+    } @catch (NSException *e) {
+        [log appendFormat:@"  异常: %@\n", e];
     }
 }
 
-static void PPProcessAllWindows() {
+static void PPApplyWithDiagnostic() {
     if (!PPIsEnabled()) return;
-    Class textEffectsWindowClass = NSClassFromString(@"UITextEffectsWindow");
-    for (UIWindow *window in [UIApplication sharedApplication].windows) {
-        if (textEffectsWindowClass && [window isKindOfClass:textEffectsWindowClass]) continue;
-        PPHideViewsInView(window);
+
+    NSMutableString *log = [NSMutableString string];
+    [log appendFormat:@"\n=== PPApplyWithDiagnostic 开始 (执行次数: %d) ===\n", ++executionCount];
+    [log appendFormat:@"时间: %@\n", [NSDate date]];
+
+    // 先记录当前窗口信息
+    NSArray *windows = [UIApplication sharedApplication].windows;
+    [log appendFormat:@"窗口数量: %lu\n", (unsigned long)windows.count];
+
+    for (UIWindow *window in windows) {
+        if ([window isKindOfClass:NSClassFromString(@"UITextEffectsWindow")]) {
+            [log appendFormat:@"  跳过: UITextEffectsWindow\n"];
+            continue;
+        }
+        [log appendFormat:@"  处理窗口: %@ frame=%@\n",
+         NSStringFromClass([window class]),
+         NSStringFromCGRect(window.frame)];
+
+        // 诊断导航栏
+        PPDumpNavigationBar(window, log);
+
+        // 执行隐藏
+        PPHideAll(window, 0, log);
     }
+
+    WriteLog(@"%@", log);
 }
+
+static NSInteger executionCount = 0;
 
 // =============================================================
 // 手势控制（双指双击）
@@ -115,43 +251,51 @@ static void showToast(NSString *msg, UIWindow *window) {
 static void showSettingsMenu(UIWindow *window) {
     UIViewController *topVC = window.rootViewController;
     while (topVC.presentedViewController) topVC = topVC.presentedViewController;
-    
+
     BOOL enabled = PPIsEnabled();
-    NSString *status = enabled ? @"已开启" : @"已关闭";
-    
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"皮皮虾界面控制"
-                                                                   message:[NSString stringWithFormat:@"当前状态：%@\n切换后需重启 App 生效", status]
+                                                                   message:[NSString stringWithFormat:@"当前状态：%@\n日志路径: Documents/PiPiNoTabs.log", enabled ? @"已开启" : @"已关闭"]
                                                             preferredStyle:UIAlertControllerStyleActionSheet];
-    
-    NSString *actionTitle = enabled ? @"关闭隐藏功能" : @"开启隐藏功能";
-    [alert addAction:[UIAlertAction actionWithTitle:actionTitle style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+
+    [alert addAction:[UIAlertAction actionWithTitle:enabled ? @"关闭隐藏" : @"开启隐藏" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
         UIAlertController *confirm = [UIAlertController alertControllerWithTitle:@"提示"
-                                                                         message:@"切换模式后需要重启 App 才能生效，确定要继续吗？"
+                                                                         message:@"切换后需重启 App 生效，确定？"
                                                                   preferredStyle:UIAlertControllerStyleAlert];
         [confirm addAction:[UIAlertAction actionWithTitle:@"确定" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-            BOOL newState = !enabled;
-            [[NSUserDefaults standardUserDefaults] setBool:newState forKey:@"PiPiNoTabsEnabled"];
+            [[NSUserDefaults standardUserDefaults] setBool:!enabled forKey:@"PiPiNoTabsEnabled"];
             [[NSUserDefaults standardUserDefaults] synchronize];
-            
-            UIAlertController *restartAlert = [UIAlertController alertControllerWithTitle:@"重启应用"
-                                                                                   message:[NSString stringWithFormat:@"已%@隐藏功能\n是否立即重启皮皮虾以应用新设置？", newState ? @"开启" : @"关闭"]
-                                                                            preferredStyle:UIAlertControllerStyleAlert];
-            [restartAlert addAction:[UIAlertAction actionWithTitle:@"立即重启" style:UIAlertActionStyleDestructive handler:^(UIAlertAction * _Nonnull action) {
+            UIAlertController *restart = [UIAlertController alertControllerWithTitle:@"重启应用"
+                                                                             message:@"是否立即重启？"
+                                                                      preferredStyle:UIAlertControllerStyleAlert];
+            [restart addAction:[UIAlertAction actionWithTitle:@"立即重启" style:UIAlertActionStyleDestructive handler:^(UIAlertAction * _Nonnull action) {
                 exit(0);
             }]];
-            [restartAlert addAction:[UIAlertAction actionWithTitle:@"稍后手动重启" style:UIAlertActionStyleCancel handler:^(UIAlertAction * _Nonnull action) {
-                showToast(@"请手动重启皮皮虾以应用新设置", window);
+            [restart addAction:[UIAlertAction actionWithTitle:@"稍后" style:UIAlertActionStyleCancel handler:^(UIAlertAction * _Nonnull action) {
+                showToast(@"请手动重启皮皮虾", window);
             }]];
-            
             UIViewController *top = window.rootViewController;
             while (top.presentedViewController) top = top.presentedViewController;
-            [top presentViewController:restartAlert animated:YES completion:nil];
+            [top presentViewController:restart animated:YES completion:nil];
         }]];
         [confirm addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
         UIViewController *top = window.rootViewController;
         while (top.presentedViewController) top = top.presentedViewController;
         [top presentViewController:confirm animated:YES completion:nil];
     }]];
+
+    [alert addAction:[UIAlertAction actionWithTitle:@"查看日志" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+        NSArray *paths = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
+        NSString *documentsDirectory = [paths firstObject];
+        NSString *logPath = [documentsDirectory stringByAppendingPathComponent:@"PiPiNoTabs.log"];
+        NSString *logContent = [NSString stringWithContentsOfFile:logPath encoding:NSUTF8StringEncoding error:nil];
+        if (!logContent) logContent = @"日志文件不存在或为空";
+        UIAlertController *logAlert = [UIAlertController alertControllerWithTitle:@"日志内容" message:logContent preferredStyle:UIAlertControllerStyleAlert];
+        [logAlert addAction:[UIAlertAction actionWithTitle:@"关闭" style:UIAlertActionStyleDefault handler:nil]];
+        UIViewController *top = window.rootViewController;
+        while (top.presentedViewController) top = top.presentedViewController;
+        [top presentViewController:logAlert animated:YES completion:nil];
+    }]];
+
     [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
     if ([[UIDevice currentDevice] userInterfaceIdiom] == UIUserInterfaceIdiomPad) {
         alert.popoverPresentationController.sourceView = window;
@@ -164,70 +308,59 @@ static void showSettingsMenu(UIWindow *window) {
 // Hook UIWindow：双指双击
 // =============================================================
 %hook UIWindow
-
 - (instancetype)initWithFrame:(CGRect)frame {
     self = %orig;
     if (self) {
         UITapGestureRecognizer *gesture = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(pp_handleDoubleTap:)];
         gesture.numberOfTouchesRequired = 2;
         gesture.numberOfTapsRequired = 2;
-        gesture.cancelsTouchesInView = NO;
-        gesture.delaysTouchesBegan = NO;
-        gesture.delaysTouchesEnded = NO;
         [self addGestureRecognizer:gesture];
-        NSLog(@"[PiPiNoTabs] 双指双击手势已添加");
+        WriteLog(@"双指双击手势已添加到窗口");
     }
     return self;
 }
-
 %new
 - (void)pp_handleDoubleTap:(UITapGestureRecognizer *)gesture {
-    if (gesture.state != UIGestureRecognizerStateRecognized) return;
-    if (@available(iOS 10.0, *)) {
-        UIImpactFeedbackGenerator *generator = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleMedium];
-        [generator prepare];
-        [generator impactOccurred];
+    if (gesture.state == UIGestureRecognizerStateRecognized) {
+        if (@available(iOS 10.0, *)) {
+            [[[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleMedium] impactOccurred];
+        }
+        WriteLog(@"用户触发双指双击，弹出菜单");
+        showSettingsMenu(self);
     }
-    showSettingsMenu(self);
 }
-
 %end
 
 // =============================================================
-// Hook UIViewController：尽早执行隐藏，只执行两次
+// Hook UIViewController
 // =============================================================
-static BOOL PPInitialized = NO;
-
 %hook UIViewController
-
 - (void)viewDidLoad {
     %orig;
-    if (!PPShouldApply()) return;
-    // 只执行一次，在viewDidLoad时立即执行
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        [UIView performWithoutAnimation:^{
-            PPProcessAllWindows();
-        }];
-    });
-}
-
-- (void)viewWillAppear:(BOOL)animated {
-    %orig;
-    if (!PPShouldApply()) return;
-    // 第二次执行，应对动态加载，但只执行一次（用静态标志）
-    static BOOL secondRun = NO;
-    if (!secondRun) {
-        secondRun = YES;
-        // 延迟极短时间，确保视图已加载
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+    if (PPShouldApply()) {
+        WriteLog(@"viewDidLoad 触发 PPApplyWithDiagnostic");
+        dispatch_async(dispatch_get_main_queue(), ^{
             [UIView performWithoutAnimation:^{
-                PPProcessAllWindows();
+                PPApplyWithDiagnostic();
             }];
         });
     }
 }
 
+- (void)viewWillAppear:(BOOL)animated {
+    %orig;
+    if (PPShouldApply()) {
+        WriteLog(@"viewWillAppear 触发 PPApplyWithDiagnostic (可能重复)");
+        static dispatch_once_t onceToken;
+        dispatch_once(&onceToken, ^{
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                [UIView performWithoutAnimation:^{
+                    PPApplyWithDiagnostic();
+                }];
+            });
+        });
+    }
+}
 %end
 
 // =============================================================
@@ -238,13 +371,17 @@ static BOOL PPInitialized = NO;
         [[NSUserDefaults standardUserDefaults] setBool:YES forKey:@"PiPiNoTabsEnabled"];
         [[NSUserDefaults standardUserDefaults] synchronize];
     }
-    NSLog(@"[PiPiNoTabs] 插件加载完成，开关状态：%@", PPIsEnabled() ? @"开启" : @"关闭");
-    
-    // 初次启动时也执行一次，防止遗漏
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+
+    WriteLog(@"========================================");
+    WriteLog(@"PiPiNoTabs 诊断版加载");
+    WriteLog(@"Bundle ID: %@", [[NSBundle mainBundle] bundleIdentifier]);
+    WriteLog(@"开关状态: %@", PPIsEnabled() ? @"开启" : @"关闭");
+    WriteLog(@"========================================");
+
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         if (PPShouldApply()) {
             [UIView performWithoutAnimation:^{
-                PPProcessAllWindows();
+                PPApplyWithDiagnostic();
             }];
         }
     });
