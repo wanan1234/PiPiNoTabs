@@ -1,8 +1,7 @@
 // =============================================================
-//  PiPiNoTabs — 双指双击控制菜单（无闪烁）
+//  PiPiNoTabs — 完整修复版（双指双击 + 无闪烁 + 重启询问）
 //  功能：隐藏顶部标签、导航栏背景、右上角搜索按钮
 //  手势：双指双击（UITapGestureRecognizer）
-//  记录时间：2026-08-14
 // =============================================================
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
@@ -129,9 +128,9 @@ static void PPTransparentizeViews(UIView *view, BOOL recursive) {
 
 static void PPProcessAllWindows() {
     if (!PPIsEnabled()) return;
+    Class textEffectsWindowClass = NSClassFromString(@"UITextEffectsWindow");
     for (UIWindow *window in [UIApplication sharedApplication].windows) {
-        if ([window isKindOfClass:[UITextEffectsWindow class]]) continue;
-        if ([NSStringFromClass([window class]) isEqualToString:@"UITextEffectsWindow"]) continue;
+        if (textEffectsWindowClass && [window isKindOfClass:textEffectsWindowClass]) continue;
         PPTransparentizeViews(window, YES);
     }
 }
@@ -144,7 +143,7 @@ static void PPApplySettings() {
 }
 
 // =============================================================
-// 手势控制：双指双击
+// 手势控制（双指双击）
 // =============================================================
 static void showToast(NSString *msg, UIWindow *window) {
     UIViewController *top = window.rootViewController;
