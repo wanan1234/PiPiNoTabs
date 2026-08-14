@@ -1,6 +1,6 @@
 // =============================================================
-//  PiPiNoTabs — 最终无闪烁版（隐藏但可点击）
-//  双指双击菜单，只执行一次
+//  PiPiNoTabs — 最终整合版（保留原有隐藏逻辑 + 搜索按钮 + 菜单）
+//  双指双击菜单，只执行一次，隐藏但可点击
 // =============================================================
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
@@ -14,58 +14,57 @@ static BOOL PPShouldApply() {
     return [bundleID isEqualToString:@"com.bd.iphone.superPropipi"] && PPIsEnabled();
 }
 
-// 全局标志：确保只执行一次
 static BOOL gHasApplied = NO;
 
-// ---------- 核心隐藏函数（透明化，保留交互） ----------
-static void PPHideAll(UIView *view) {
+// ---------- 原有核心逻辑（透明化） ----------
+static void PPTransparentizeViews(UIView *view) {
     if (!view) return;
     if (!PPIsEnabled()) return;
 
     @try {
-        NSString *className = NSStringFromClass([view class]);
-
-        // 1. 底部 TabBar（TTTabbar）完全隐藏，不保留交互
-        if ([className isEqualToString:@"TTTabbar"]) {
-            view.hidden = YES;
+        // 1. 底部 TabBar（TTTabbar）完全隐藏
+        if ([NSStringFromClass([view class]) isEqualToString:@"TTTabbar"]) {
             view.alpha = 0.0;
+            view.hidden = YES;
             view.userInteractionEnabled = NO;
             for (UIView *sub in view.subviews) {
-                sub.hidden = YES;
                 sub.alpha = 0.0;
+                sub.hidden = YES;
                 sub.userInteractionEnabled = NO;
             }
             return;
         }
 
-        // 2. 导航栏背景完全隐藏
-        if ([className isEqualToString:@"_UIBarBackground"] ||
-            [className isEqualToString:@"_UIBarBackgroundShadowView"] ||
-            [className isEqualToString:@"_UIBarBackgroundShadowContentImageView"]) {
-            view.hidden = YES;
-            view.alpha = 0.0;
-            // 不修改 userInteractionEnabled，因为背景本身不响应事件
-        }
-
-        // 3. 顶部标签（隐藏但保留点击）
+        // 2. 顶部标签文字（UILabel）透明化但保留交互
         if ([view isKindOfClass:[UILabel class]]) {
             UILabel *label = (UILabel *)view;
-            NSArray *targets = @[@"关注", @"推荐", @"视频", @"图片", @"图文", @"职业圈", @"虾聊", @"文字"];
-            if ([targets containsObject:label.text]) {
-                label.alpha = 0.0;
-                label.hidden = NO;           // 保持 hidden=NO 以保留交互
-                label.userInteractionEnabled = YES;
-                // 如果父视图是 UIButton 或 UIControl，也要透明化但保留交互
-                UIView *parent = label.superview;
-                if (parent && ([parent isKindOfClass:[UIButton class]] || [parent isKindOfClass:[UIControl class]])) {
-                    parent.alpha = 0.0;
-                    parent.hidden = NO;
-                    parent.userInteractionEnabled = YES;
+            NSArray *targetTitles = @[@"关注", @"推荐", @"视频", @"图片", @"图文", @"职业圈", @"虾聊", @"文字"];
+            for (NSString *title in targetTitles) {
+                if ([label.text isEqualToString:title]) {
+                    label.alpha = 0.01; // 极小值以保留交互
+                    label.hidden = NO;
+                    label.userInteractionEnabled = YES;
+                    // 透明化父视图（如果是 UIButton 或 UIControl）
+                    UIView *parent = label.superview;
+                    if (parent && ([parent isKindOfClass:[UIButton class]] || [parent isKindOfClass:[UIControl class]])) {
+                        parent.alpha = 0.01;
+                        parent.hidden = NO;
+                        parent.userInteractionEnabled = YES;
+                    }
+                    break;
                 }
             }
         }
 
-        // 4. 顶部按钮（如搜索按钮）隐藏但保留点击
+        // 3. 导航栏背景完全隐藏
+        if ([NSStringFromClass([view class]) isEqualToString:@"_UIBarBackground"] ||
+            [NSStringFromClass([view class]) isEqualToString:@"_UIBarBackgroundShadowView"] ||
+            [NSStringFromClass([view class]) isEqualToString:@"_UIBarBackgroundShadowContentImageView"]) {
+            view.hidden = YES;
+            view.alpha = 0.0;
+        }
+
+        // 4. 搜索按钮隐藏但保留交互
         if ([view isKindOfClass:[UIButton class]]) {
             UIButton *btn = (UIButton *)view;
             // 检查是否包含 UIImageView（搜索按钮特征）
@@ -76,50 +75,40 @@ static void PPHideAll(UIView *view) {
                     break;
                 }
             }
-            // 检查位置是否在屏幕右侧（x > 屏幕宽度的 70%）
+            // 检查是否在屏幕右侧区域（x > 屏幕宽度的 70%）
             CGRect frameInWindow = [btn convertRect:btn.bounds toView:nil];
             CGFloat screenWidth = [UIScreen mainScreen].bounds.size.width;
             if (hasImageView && frameInWindow.origin.x > screenWidth * 0.7) {
-                btn.alpha = 0.0;
+                btn.alpha = 0.01;
                 btn.hidden = NO;
                 btn.userInteractionEnabled = YES;
-                // 不要隐藏父容器，只透明按钮本身
+                // 不隐藏父容器
             }
-        }
-
-        // 5. 对于其他可能包含顶部选项的容器（如 UINavigationBar 的 contentView），透明化但不隐藏
-        if ([view isKindOfClass:[UINavigationBar class]]) {
-            // 只处理导航栏本身，不要完全隐藏
-            view.alpha = 1.0; // 保持导航栏可见（背景已隐藏）
-        }
-        if ([className isEqualToString:@"_UINavigationBarContentView"]) {
-            // 内容视图透明化，但保留交互
-            view.alpha = 0.0;
-            view.hidden = NO;
-            view.userInteractionEnabled = YES;
         }
 
         // 递归子视图
         for (UIView *sub in view.subviews) {
-            PPHideAll(sub);
+            PPTransparentizeViews(sub);
         }
-    } @catch (NSException *e) {
-        NSLog(@"[PiPiNoTabs] 异常: %@", e);
+    } @catch (NSException *e) {}
+}
+
+static void PPProcessAllWindows() {
+    if (!PPIsEnabled()) return;
+    for (UIWindow *window in [UIApplication sharedApplication].windows) {
+        if ([window isKindOfClass:NSClassFromString(@"UITextEffectsWindow")]) continue;
+        if ([window isKindOfClass:NSClassFromString(@"BDSBrightnessWindow")]) continue;
+        if ([window isKindOfClass:NSClassFromString(@"HUDWindow")]) continue;
+        PPTransparentizeViews(window);
     }
 }
 
-static void PPApply() {
-    if (!PPIsEnabled()) return;
-    if (gHasApplied) return;  // 只执行一次
+static void PPApplySettings() {
+    if (!PPShouldApply()) return;
+    if (gHasApplied) return;
     gHasApplied = YES;
-
     [UIView performWithoutAnimation:^{
-        for (UIWindow *window in [UIApplication sharedApplication].windows) {
-            if ([window isKindOfClass:NSClassFromString(@"UITextEffectsWindow")]) continue;
-            if ([window isKindOfClass:NSClassFromString(@"BDSBrightnessWindow")]) continue;
-            if ([window isKindOfClass:NSClassFromString(@"HUDWindow")]) continue;
-            PPHideAll(window);
-        }
+        PPProcessAllWindows();
     }];
 }
 
@@ -152,7 +141,7 @@ static void showSettingsMenu(UIWindow *window) {
         [confirm addAction:[UIAlertAction actionWithTitle:@"确定" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
             [[NSUserDefaults standardUserDefaults] setBool:!enabled forKey:@"PiPiNoTabsEnabled"];
             [[NSUserDefaults standardUserDefaults] synchronize];
-            gHasApplied = NO;  // 重置标志，让下次启动时能执行新状态
+            gHasApplied = NO;
             UIAlertController *restart = [UIAlertController alertControllerWithTitle:@"重启应用"
                                                                              message:@"是否立即重启？"
                                                                       preferredStyle:UIAlertControllerStyleAlert];
@@ -206,15 +195,15 @@ static void showSettingsMenu(UIWindow *window) {
 %end
 
 // =============================================================
-// Hook UIViewController：在 viewWillAppear 中执行一次
+// Hook UIViewController：在 viewDidAppear 执行一次
 // =============================================================
 %hook UIViewController
-- (void)viewWillAppear:(BOOL)animated {
+- (void)viewDidAppear:(BOOL)animated {
     %orig;
     if (PPShouldApply() && !gHasApplied) {
-        // 延迟极短时间，确保在视图动画开始前执行
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            PPApply();
+        // 在 viewDidAppear 中执行，确保视图完全显示，延迟 0.1 秒避开动画
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            PPApplySettings();
         });
     }
 }
@@ -228,10 +217,10 @@ static void showSettingsMenu(UIWindow *window) {
         [[NSUserDefaults standardUserDefaults] setBool:YES forKey:@"PiPiNoTabsEnabled"];
         [[NSUserDefaults standardUserDefaults] synchronize];
     }
-    // 如果 App 启动时已经加载了视图，也尝试应用一次（但用标志确保只执行一次）
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+    // 作为备用，延迟较长时间执行
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.8 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         if (PPShouldApply() && !gHasApplied) {
-            PPApply();
+            PPApplySettings();
         }
     });
 }
