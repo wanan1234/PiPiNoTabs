@@ -1,5 +1,5 @@
 // =============================================================
-//  PiPiNoTabs — 最终版（限流 + 透明化保留交互）
+//  PiPiNoTabs — 最终版（多次执行，透明化保留交互）
 //  双指双击菜单，重启生效
 // =============================================================
 #import <UIKit/UIKit.h>
@@ -13,9 +13,6 @@ static BOOL PPShouldApply() {
     NSString *bundleID = [[NSBundle mainBundle] bundleIdentifier];
     return [bundleID isEqualToString:@"com.bd.iphone.superPropipi"] && PPIsEnabled();
 }
-
-// 限流：两次执行至少间隔 0.2 秒
-static NSTimeInterval lastApplyTime = 0;
 
 // ---------- 核心隐藏函数（透明化，保留交互） ----------
 static void PPHideAll(UIView *view) {
@@ -44,7 +41,6 @@ static void PPHideAll(UIView *view) {
             [className isEqualToString:@"_UIBarBackgroundShadowContentImageView"]) {
             view.hidden = YES;
             view.alpha = 0.0;
-            // 背景不响应事件，无需改交互
         }
 
         // 3. 顶部标签：透明化，保留交互
@@ -55,7 +51,7 @@ static void PPHideAll(UIView *view) {
                 label.alpha = 0.0;
                 label.hidden = NO;
                 label.userInteractionEnabled = YES;
-                // 如果父视图是 UIButton 或 UIControl，也透明化但保留交互
+                // 父视图如果是按钮，也透明化但保留交互
                 UIView *parent = label.superview;
                 if (parent && ([parent isKindOfClass:[UIButton class]] || [parent isKindOfClass:[UIControl class]])) {
                     parent.alpha = 0.0;
@@ -65,7 +61,7 @@ static void PPHideAll(UIView *view) {
             }
         }
 
-        // 4. 搜索按钮（屏幕右侧的 UIButton 含 UIImageView）：透明化，保留交互
+        // 4. 搜索按钮（右侧含图片的 UIButton）：透明化，保留交互
         if ([view isKindOfClass:[UIButton class]]) {
             UIButton *btn = (UIButton *)view;
             BOOL hasImageView = NO;
@@ -75,17 +71,35 @@ static void PPHideAll(UIView *view) {
                     break;
                 }
             }
-            CGRect frameInWindow = [btn convertRect:btn.bounds toView:nil];
-            CGFloat screenWidth = [UIScreen mainScreen].bounds.size.width;
-            if (hasImageView && frameInWindow.origin.x > screenWidth * 0.7) {
+            if (!hasImageView) {
+                // 也可能按钮本身是搜索图标，检查按钮标题或 image
+                if ([btn imageForState:UIControlStateNormal] != nil) {
+                    hasImageView = YES;
+                }
+            }
+            if (!hasImageView) {
+                // 检查按钮是否在 UINavigationBar 右侧区域
+                UIView *navBar = btn.superview;
+                while (navBar && ![navBar isKindOfClass:[UINavigationBar class]]) {
+                    navBar = navBar.superview;
+                }
+                if (navBar) {
+                    CGRect frameInNav = [btn convertRect:btn.bounds toView:navBar];
+                    CGFloat navWidth = navBar.bounds.size.width;
+                    if (frameInNav.origin.x > navWidth * 0.7) {
+                        hasImageView = YES; // 视为搜索按钮
+                    }
+                }
+            }
+            if (hasImageView) {
                 btn.alpha = 0.0;
                 btn.hidden = NO;
                 btn.userInteractionEnabled = YES;
-                // 不隐藏父容器
+                // 不隐藏父容器，只透明按钮
             }
         }
 
-        // 5. 导航栏内容视图透明化（但保留交互）
+        // 5. 导航栏内容视图透明化
         if ([className isEqualToString:@"_UINavigationBarContentView"]) {
             view.alpha = 0.0;
             view.hidden = NO;
@@ -103,12 +117,6 @@ static void PPHideAll(UIView *view) {
 
 static void PPApply() {
     if (!PPIsEnabled()) return;
-
-    // 限流：两次执行间隔至少 0.2 秒
-    NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
-    if (now - lastApplyTime < 0.2) return;
-    lastApplyTime = now;
-
     [UIView performWithoutAnimation:^{
         for (UIWindow *window in [UIApplication sharedApplication].windows) {
             if ([window isKindOfClass:NSClassFromString(@"UITextEffectsWindow")]) continue;
@@ -201,7 +209,7 @@ static void showSettingsMenu(UIWindow *window) {
 %end
 
 // =============================================================
-// Hook UIViewController：在多个时机调用，但限流
+// Hook UIViewController：在多个时机调用（无限制流）
 // =============================================================
 %hook UIViewController
 - (void)viewDidLoad {
