@@ -4,6 +4,7 @@
 // =============================================================
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
+#import <stdarg.h>
 
 // ---------- 日志工具 ----------
 static void WriteLog(NSString *format, ...) {
@@ -47,6 +48,9 @@ static BOOL PPShouldApply() {
     return [bundleID isEqualToString:@"com.bd.iphone.superPropipi"] && PPIsEnabled();
 }
 
+// ---------- 执行计数器 ----------
+static NSInteger executionCount = 0;
+
 // ---------- 视图层级诊断 ----------
 static void PPDumpViewHierarchy(UIView *view, NSInteger depth, NSMutableString *output) {
     if (!view) return;
@@ -81,7 +85,6 @@ static void PPDumpViewHierarchy(UIView *view, NSInteger depth, NSMutableString *
 static void PPDumpNavigationBar(UIView *rootView, NSMutableString *output) {
     if (!rootView) return;
 
-    // 遍历查找所有 UINavigationBar
     NSMutableArray *queue = [NSMutableArray arrayWithObject:rootView];
     while (queue.count > 0) {
         UIView *view = queue.firstObject;
@@ -104,7 +107,6 @@ static void PPDumpNavigationBar(UIView *rootView, NSMutableString *output) {
                  NSStringFromCGRect(subFrame),
                  isRight];
 
-                // 递归打印子视图
                 for (UIView *subsub in sub.subviews) {
                     [output appendFormat:@"    %@ frame=%@\n",
                      NSStringFromClass([subsub class]),
@@ -163,7 +165,6 @@ static void PPHideAll(UIView *view, NSInteger depth, NSMutableString *log) {
         // 4. 隐藏右上角搜索按钮（详细诊断）
         if ([view isKindOfClass:[UIButton class]]) {
             UIButton *btn = (UIButton *)view;
-            // 查找导航栏
             UIView *navBar = btn.superview;
             while (navBar && ![navBar isKindOfClass:[UINavigationBar class]]) {
                 navBar = navBar.superview;
@@ -178,7 +179,6 @@ static void PPHideAll(UIView *view, NSInteger depth, NSMutableString *log) {
                     [log appendFormat:@"    navWidth=%.1f, x=%.1f, 父视图=%@\n",
                      navWidth, frameInNav.origin.x, NSStringFromClass([btn.superview class])];
 
-                    // 尝试隐藏按钮及其容器
                     UIView *container = btn.superview;
                     if (container && container.superview == navBar) {
                         [log appendFormat:@"  隐藏容器: %@\n", NSStringFromClass([container class])];
@@ -210,7 +210,6 @@ static void PPApplyWithDiagnostic() {
     [log appendFormat:@"\n=== PPApplyWithDiagnostic 开始 (执行次数: %d) ===\n", ++executionCount];
     [log appendFormat:@"时间: %@\n", [NSDate date]];
 
-    // 先记录当前窗口信息
     NSArray *windows = [UIApplication sharedApplication].windows;
     [log appendFormat:@"窗口数量: %lu\n", (unsigned long)windows.count];
 
@@ -223,17 +222,12 @@ static void PPApplyWithDiagnostic() {
          NSStringFromClass([window class]),
          NSStringFromCGRect(window.frame)];
 
-        // 诊断导航栏
         PPDumpNavigationBar(window, log);
-
-        // 执行隐藏
         PPHideAll(window, 0, log);
     }
 
     WriteLog(@"%@", log);
 }
-
-static NSInteger executionCount = 0;
 
 // =============================================================
 // 手势控制（双指双击）
